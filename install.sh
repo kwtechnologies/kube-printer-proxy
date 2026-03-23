@@ -6,7 +6,7 @@
 # temp file and re-execute it so that interactive read prompts work.
 if [ ! -t 0 ]; then
   SELF_URL="https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.sh"
-  tmp="$(mktemp /tmp/printer-proxy-install.XXXXXX.sh)"
+  tmp="/tmp/printer-proxy-install-$$.sh"
   curl -fsSL -o "$tmp" "$SELF_URL"
   exec sudo bash "$tmp" "$@"
 fi
