@@ -8,7 +8,7 @@ if [ ! -t 0 ]; then
   SELF_URL="https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.sh"
   tmp="/tmp/printer-proxy-install-$$.sh"
   curl -fsSL -o "$tmp" "$SELF_URL"
-  exec sudo bash "$tmp" "$@"
+  exec sudo bash "$tmp" "$@" </dev/tty
 fi
 
 set -euo pipefail
