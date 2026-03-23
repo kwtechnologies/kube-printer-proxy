@@ -1,0 +1,5 @@
+printer-proxy
+printer-proxy.exe
+*.log
+.env
+dist/

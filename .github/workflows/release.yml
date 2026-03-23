@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build binaries
+        run: |
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o printer-proxy.exe
+          GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o printer-proxy-darwin-amd64
+          GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o printer-proxy-darwin-arm64
+
+      - name: Bundle Windows installer zip
+        run: |
+          mkdir -p dist-win
+          cp printer-proxy.exe install.bat install.ps1 dist-win/
+          echo "Double-click install.bat to begin." > dist-win/README.txt
+          cd dist-win && zip ../printer-proxy-installer-windows.zip *
+
+      - name: Bundle macOS installer zip
+        run: |
+          mkdir -p dist-mac
+          cp printer-proxy-darwin-amd64 printer-proxy-darwin-arm64 install.sh dist-mac/
+          echo "Run: bash install.sh" > dist-mac/README.txt
+          cd dist-mac && zip ../printer-proxy-installer-macos.zip *
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            printer-proxy.exe
+            printer-proxy-darwin-amd64
+            printer-proxy-darwin-arm64
+            printer-proxy-installer-windows.zip
+            printer-proxy-installer-macos.zip
+            install.sh
+            install.ps1
