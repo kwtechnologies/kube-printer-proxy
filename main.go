@@ -82,7 +82,7 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := sendZPL(req.IP, req.ZPL); err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("print failed: %v", err))
+		writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("print failed: %v", err))
 		return
 	}
 
