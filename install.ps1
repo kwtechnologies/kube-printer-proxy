@@ -45,7 +45,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
 function Write-Banner {
     Write-Host ""
     Write-Host "====================================" -ForegroundColor Cyan
-    Write-Host "  Printer Proxy Installer" -ForegroundColor Cyan
+    Write-Host "  Printer Proxy Installer (Windows)" -ForegroundColor Cyan
     Write-Host "====================================" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -386,15 +386,20 @@ function Do-Install {
         Write-Host "  API Key   : $apiKey" -ForegroundColor White
         Write-Host ""
 
-        # Save credentials to a file on the desktop for easy access
-        $credFile = [Environment]::GetFolderPath("Desktop") + "\printer-proxy-credentials.txt"
+        # Save credentials to install dir (same as macOS)
         $credContent = "Printer Proxy Credentials`r`n" +
             "========================`r`n" +
             "Proxy URL : $proxyUrl`r`n" +
             "API Key   : $apiKey`r`n" +
             "`r`nEnter these values in Portal > Print Proxy settings."
+        $credFile = "$InstallDir\credentials.txt"
         Set-Content -Path $credFile -Value $credContent -Encoding UTF8
         Write-Host "  Credentials saved to: $credFile" -ForegroundColor Yellow
+
+        # Also save a copy to Desktop for easy access
+        $desktopCred = [Environment]::GetFolderPath("Desktop") + "\printer-proxy-credentials.txt"
+        Set-Content -Path $desktopCred -Value $credContent -Encoding UTF8
+        Write-Host "  Credentials also saved to: $desktopCred" -ForegroundColor Yellow
     }
 }
 
