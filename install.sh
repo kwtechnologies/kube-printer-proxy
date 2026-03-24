@@ -421,6 +421,19 @@ PLIST
     echo ""
     echo "  Proxy URL : $PROXY_URL"
     echo "  API Key   : $API_KEY"
+    echo ""
+
+    # Save credentials to a file for easy access
+    local cred_file="${INSTALL_DIR}/credentials.txt"
+    cat > "$cred_file" <<CRED
+Printer Proxy Credentials
+========================
+Proxy URL : $PROXY_URL
+API Key   : $API_KEY
+
+Enter these values in Portal > Print Proxy settings.
+CRED
+    warn "  Credentials saved to: $cred_file"
   fi
 }
 

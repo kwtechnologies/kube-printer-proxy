@@ -384,6 +384,17 @@ function Do-Install {
         Write-Host ""
         Write-Host "  Proxy URL : $proxyUrl" -ForegroundColor White
         Write-Host "  API Key   : $apiKey" -ForegroundColor White
+        Write-Host ""
+
+        # Save credentials to a file on the desktop for easy access
+        $credFile = [Environment]::GetFolderPath("Desktop") + "\printer-proxy-credentials.txt"
+        $credContent = "Printer Proxy Credentials`r`n" +
+            "========================`r`n" +
+            "Proxy URL : $proxyUrl`r`n" +
+            "API Key   : $apiKey`r`n" +
+            "`r`nEnter these values in Portal > Print Proxy settings."
+        Set-Content -Path $credFile -Value $credContent -Encoding UTF8
+        Write-Host "  Credentials saved to: $credFile" -ForegroundColor Yellow
     }
 }
 
@@ -434,21 +445,27 @@ function Do-Uninstall {
 }
 
 # --------------- Main menu ---------------
-Write-Banner
+try {
+    Write-Banner
 
-Write-Host "  1) Install (fresh)"
-Write-Host "  2) Update (download latest binary)"
-Write-Host "  3) Uninstall (remove everything)"
-Write-Host ""
-$choice = Read-Host "Choose an option (1/2/3)"
+    Write-Host "  1) Install (fresh)"
+    Write-Host "  2) Update (download latest binary)"
+    Write-Host "  3) Uninstall (remove everything)"
+    Write-Host ""
+    $choice = Read-Host "Choose an option (1/2/3)"
 
-switch ($choice) {
-    "1" { Do-Install }
-    "2" { Do-Update }
-    "3" { Do-Uninstall }
-    default { Write-Host "Invalid choice." -ForegroundColor Red }
+    switch ($choice) {
+        "1" { Do-Install }
+        "2" { Do-Update }
+        "3" { Do-Uninstall }
+        default { Write-Host "Invalid choice." -ForegroundColor Red }
+    }
+} catch {
+    Write-Host ""
+    Write-Host "An error occurred: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+} finally {
+    Write-Host ""
+    Write-Host "Press any key to exit..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 }
-
-Write-Host ""
-Write-Host "Press any key to exit..."
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
