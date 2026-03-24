@@ -119,10 +119,22 @@ function Setup-Tunnel($tunnelName) {
         Write-Host "  API token verification failed. Errors: $($accounts.errors | ConvertTo-Json -Compress)" -ForegroundColor Red
         return $null
     }
-    $accountId = $accounts.result[0].id
+    $accountId = $null
+    if ($accounts.result -and $accounts.result.Count -gt 0) {
+        $accountId = $accounts.result[0].id
+    }
     if (-not $accountId) {
-        Write-Host "  Could not determine account ID. Aborting." -ForegroundColor Red
-        return $null
+        Write-Host "  Token cannot list accounts. Trying zone lookup to infer account..." -ForegroundColor Yellow
+        try {
+            $zonesResp = Cf-Get "/zones?name=${CfDomain}&per_page=1"
+            if ($zonesResp.result -and $zonesResp.result.Count -gt 0) {
+                $accountId = $zonesResp.result[0].account.id
+            }
+        } catch {}
+        if (-not $accountId) {
+            Write-Host "  Could not determine account ID. Ensure the token has account and zone permissions." -ForegroundColor Red
+            return $null
+        }
     }
     Write-Host "  Token verified. Account: $accountId" -ForegroundColor Green
 

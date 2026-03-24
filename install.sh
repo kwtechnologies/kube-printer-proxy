@@ -116,7 +116,7 @@ setup_tunnel() {
 
   echo ""
   info "  Verifying Cloudflare API token and fetching account..."
-  local accounts
+  local accounts account_id
   accounts="$(cf_get "/accounts?per_page=1")"
   local cf_success
   cf_success="$(echo "$accounts" | json_val "d.get('success', False)")"
@@ -127,10 +127,18 @@ setup_tunnel() {
     err "  Errors: $cf_errors"
     return 1
   fi
-  local account_id
-  account_id="$(echo "$accounts" | json_val "d['result'][0]['id']")"
+  account_id="$(echo "$accounts" | json_val "d['result'][0]['id']" 2>/dev/null || echo "")"
   if [ -z "$account_id" ]; then
-    err "  Could not determine account ID. Aborting."; return 1
+    warn "  Token cannot list accounts (empty result). Trying zone lookup to infer account..."
+    local zones_resp
+    zones_resp="$(cf_get "/zones?name=${CF_DOMAIN}&per_page=1")"
+    account_id="$(echo "$zones_resp" | json_val "d['result'][0]['account']['id']" 2>/dev/null || echo "")"
+    if [ -z "$account_id" ]; then
+      err "  Could not determine account ID from zone lookup either."
+      err "  Ensure the token has 'Account > Cloudflare Tunnel > Edit' and 'Zone > DNS > Edit' permissions"
+      err "  with your account and kwtech.dev zone included in the resource scope."
+      return 1
+    fi
   fi
   info "  Token verified. Account: $account_id"
 
