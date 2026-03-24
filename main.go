@@ -81,29 +81,39 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	addr := fmt.Sprintf("%s:9100", req.IP)
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to connect to printer: %v", err))
+	if err := sendZPL(req.IP, req.ZPL); err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("print failed: %v", err))
 		return
 	}
-	defer conn.Close()
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := io.WriteString(conn, req.ZPL); err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to send data to printer: %v", err))
-		return
-	}
-	// Half-close the write side so the printer knows all data has been sent,
-	// then drain any response bytes before fully closing.
-	if tc, ok := conn.(*net.TCPConn); ok {
-		tc.CloseWrite()
-	}
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	io.Copy(io.Discard, conn)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"status":"ok"}`)
+}
+
+// sendZPL opens a raw TCP connection to the printer on port 9100,
+// writes the ZPL payload, half-closes the write side so the printer
+// processes the data, then drains any response before fully closing.
+func sendZPL(ip, zpl string) error {
+	addr := fmt.Sprintf("%s:9100", ip)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close()
+
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(conn, zpl); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.CloseWrite()
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	io.Copy(io.Discard, conn)
+	return nil
 }
 
 func isPrivateIP(ipStr string) bool {
