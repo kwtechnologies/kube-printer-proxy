@@ -33,7 +33,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/health", withCORS(handleHealth))
 	mux.HandleFunc("/print", withCORS(withAuth(apiKey, handlePrint)))
 	mux.HandleFunc("/", withCORS(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
