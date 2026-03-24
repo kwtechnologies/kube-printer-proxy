@@ -13,7 +13,8 @@ $ErrorActionPreference = "Stop"
 $InstallDir   = "C:\printer-proxy"
 $ServiceName  = "PrinterProxy"
 $CfServiceName = "CloudflaredTunnel"
-$NssmUrl      = "https://nssm.cc/release/nssm-2.24.zip"
+$NssmUrl      = "https://github.com/dkxce/NSSM/releases/download/v2.25/NSSM_v2.25.zip"
+$NssmUrlFallback = "https://nssm.cc/release/nssm-2.24.zip"
 $CfUrl        = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 $GhRepo       = "kwtechnologies/kube-printer-proxy"
 $CfDomain     = "kwtech.dev"
@@ -311,9 +312,14 @@ function Do-Install {
     }
     Download-File $exeAsset.browser_download_url "$InstallDir\printer-proxy.exe"
 
-    # nssm.exe
+    # nssm.exe (try GitHub mirror first, fallback to nssm.cc)
     $nssmZip = "$env:TEMP\nssm.zip"
-    Download-File $NssmUrl $nssmZip
+    try {
+        Download-File $NssmUrl $nssmZip
+    } catch {
+        Write-Host "  Primary mirror failed, trying fallback..." -ForegroundColor Yellow
+        Download-File $NssmUrlFallback $nssmZip
+    }
     Expand-Archive -Path $nssmZip -DestinationPath "$env:TEMP\nssm" -Force
     $nssmExe = Get-ChildItem "$env:TEMP\nssm" -Recurse -Filter "nssm.exe" | Where-Object { $_.DirectoryName -match "win64" } | Select-Object -First 1
     Copy-Item $nssmExe.FullName "$InstallDir\nssm.exe" -Force
