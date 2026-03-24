@@ -17,20 +17,32 @@ jobs:
         with:
           go-version: "1.22"
 
-      - name: Build binaries
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build Go proxy binaries
         run: |
           GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o printer-proxy.exe
           GOOS=darwin  GOARCH=amd64 go build -ldflags="-s -w" -o printer-proxy-darwin-amd64
           GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o printer-proxy-darwin-arm64
 
-      - name: Bundle Windows installer zip
+      - name: Build Bun installer binaries
+        run: |
+          cd installer
+          bun install --frozen-lockfile
+          bun build --compile --minify --target=bun-windows-x64 src/index.ts --outfile ../printer-proxy-setup.exe
+          bun build --compile --minify --target=bun-darwin-arm64 src/index.ts --outfile ../printer-proxy-setup-macos-arm64
+          bun build --compile --minify --target=bun-darwin-x64 src/index.ts --outfile ../printer-proxy-setup-macos-x64
+
+      - name: Bundle legacy Windows installer zip
         run: |
           mkdir -p dist-win
           cp printer-proxy.exe install.bat install.ps1 dist-win/
           echo "Double-click install.bat to begin." > dist-win/README.txt
           cd dist-win && zip ../printer-proxy-installer-windows.zip *
 
-      - name: Bundle macOS installer zip
+      - name: Bundle legacy macOS installer zip
         run: |
           mkdir -p dist-mac
           cp printer-proxy-darwin-amd64 printer-proxy-darwin-arm64 install.sh dist-mac/
@@ -44,6 +56,11 @@ jobs:
             printer-proxy.exe
             printer-proxy-darwin-amd64
             printer-proxy-darwin-arm64
+            printer-proxy-setup.exe
+            printer-proxy-setup-macos-arm64
+            printer-proxy-setup-macos-x64
+            setup.sh
+            setup.ps1
             printer-proxy-installer-windows.zip
             printer-proxy-installer-macos.zip
             install.sh

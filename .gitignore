@@ -3,3 +3,4 @@ printer-proxy.exe
 *.log
 .env
 dist/
+**/node_modules
