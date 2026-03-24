@@ -1,5 +1,12 @@
 # printer-proxy installer for Windows
 # Self-elevating, interactive, menu-driven
+# Supports automatic Cloudflare Tunnel creation via API
+
+param(
+    [string]$TunnelName = "",
+    [string]$CfToken = "",
+    [string]$ProxyApiKey = ""
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -9,19 +16,26 @@ $CfServiceName = "CloudflaredTunnel"
 $NssmUrl      = "https://nssm.cc/release/nssm-2.24.zip"
 $CfUrl        = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 $GhRepo       = "kwtechnologies/kube-printer-proxy"
+$CfDomain     = "kwtech.dev"
+$CfApiBase    = "https://api.cloudflare.com/client/v4"
 
 # --------------- Self-elevate to admin ---------------
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Requesting administrator privileges..." -ForegroundColor Yellow
     if ($PSCommandPath) {
         $relaunchArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        if ($TunnelName) { $relaunchArgs += " -TunnelName `"$TunnelName`"" }
+        if ($CfToken)    { $relaunchArgs += " -CfToken `"$CfToken`"" }
+        if ($ProxyApiKey) { $relaunchArgs += " -ProxyApiKey `"$ProxyApiKey`"" }
     } else {
-        # Running via iex (one-liner) — download script to temp, then re-launch
         $tempScript = "$env:TEMP\printer-proxy-install.ps1"
         $scriptUrl = "https://github.com/$GhRepo/releases/latest/download/install.ps1"
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         (New-Object System.Net.WebClient).DownloadFile($scriptUrl, $tempScript)
         $relaunchArgs = "-ExecutionPolicy Bypass -File `"$tempScript`""
+        if ($TunnelName) { $relaunchArgs += " -TunnelName `"$TunnelName`"" }
+        if ($CfToken)    { $relaunchArgs += " -CfToken `"$CfToken`"" }
+        if ($ProxyApiKey) { $relaunchArgs += " -ProxyApiKey `"$ProxyApiKey`"" }
     }
     Start-Process powershell -Verb RunAs -ArgumentList $relaunchArgs
     exit
@@ -61,30 +75,220 @@ function Stop-And-Remove-Service($name) {
     }
 }
 
+function Generate-ApiKey {
+    $bytes = New-Object byte[] 16
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    return ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+}
+
+# --------------- Cloudflare API helpers ---------------
+function Cf-Get($endpoint) {
+    $headers = @{ "Authorization" = "Bearer $script:cfApiToken" }
+    return Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Get
+}
+
+function Cf-Post($endpoint, $body) {
+    $headers = @{
+        "Authorization" = "Bearer $script:cfApiToken"
+        "Content-Type"  = "application/json"
+    }
+    return Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Post -Body $body
+}
+
+function Cf-Put($endpoint, $body) {
+    $headers = @{
+        "Authorization" = "Bearer $script:cfApiToken"
+        "Content-Type"  = "application/json"
+    }
+    return Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Put -Body $body
+}
+
+function Setup-Tunnel($tunnelName) {
+    $subdomain = "print-proxy-$tunnelName"
+    $hostname = "$subdomain.$CfDomain"
+
+    Write-Host ""
+    Write-Host "  Verifying Cloudflare API token..." -ForegroundColor Green
+    $verify = Cf-Get "/user/tokens/verify"
+    if ($verify.result.status -ne "active") {
+        Write-Host "  API token is not active (status: $($verify.result.status)). Aborting." -ForegroundColor Red
+        return $null
+    }
+    Write-Host "  Token is valid." -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "  Fetching account ID..." -ForegroundColor Green
+    $accounts = Cf-Get "/accounts?per_page=1"
+    $accountId = $accounts.result[0].id
+    if (-not $accountId) {
+        Write-Host "  Could not determine account ID. Aborting." -ForegroundColor Red
+        return $null
+    }
+    Write-Host "  Account: $accountId"
+
+    Write-Host ""
+    Write-Host "  Fetching zone ID for ${CfDomain}..." -ForegroundColor Green
+    $zones = Cf-Get "/zones?name=${CfDomain}&per_page=1"
+    $zoneId = $zones.result[0].id
+    if (-not $zoneId) {
+        Write-Host "  Could not find zone ${CfDomain}. Aborting." -ForegroundColor Red
+        return $null
+    }
+    Write-Host "  Zone: $zoneId"
+
+    Write-Host ""
+    Write-Host "  Checking for existing tunnel '$tunnelName'..." -ForegroundColor Green
+    $existing = Cf-Get "/accounts/${accountId}/cfd_tunnel?name=${tunnelName}&is_deleted=false"
+    $tunnelId = $null
+    if ($existing.result -and $existing.result.Count -gt 0) {
+        $tunnelId = $existing.result[0].id
+        Write-Host "  Found existing tunnel: $tunnelId - reusing it." -ForegroundColor Yellow
+    } else {
+        Write-Host "  Creating new tunnel '$tunnelName'..." -ForegroundColor Green
+        $secretBytes = New-Object byte[] 32
+        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($secretBytes)
+        $tunnelSecret = [Convert]::ToBase64String($secretBytes)
+        $createBody = @{
+            name = $tunnelName
+            config_src = "cloudflare"
+            tunnel_secret = $tunnelSecret
+        } | ConvertTo-Json
+        $createResp = Cf-Post "/accounts/${accountId}/cfd_tunnel" $createBody
+        $tunnelId = $createResp.result.id
+        if (-not $tunnelId) {
+            Write-Host "  Failed to create tunnel. Aborting." -ForegroundColor Red
+            return $null
+        }
+        Write-Host "  Created tunnel: $tunnelId" -ForegroundColor Green
+    }
+
+    Write-Host ""
+    Write-Host "  Configuring ingress rules ($hostname -> http://localhost:9191)..." -ForegroundColor Green
+    $configBody = @{
+        config = @{
+            ingress = @(
+                @{ hostname = $hostname; service = "http://localhost:9191" },
+                @{ service = "http_status:404" }
+            )
+        }
+    } | ConvertTo-Json -Depth 4
+    $configResp = Cf-Put "/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations" $configBody
+    if (-not $configResp.success) {
+        Write-Host "  Failed to configure ingress. Aborting." -ForegroundColor Red
+        return $null
+    }
+    Write-Host "  Ingress configured." -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "  Creating DNS CNAME record ($hostname -> ${tunnelId}.cfargotunnel.com)..." -ForegroundColor Green
+    $dnsCheck = Cf-Get "/zones/${zoneId}/dns_records?name=${hostname}&type=CNAME"
+    if ($dnsCheck.result -and $dnsCheck.result.Count -gt 0) {
+        $existingDnsId = $dnsCheck.result[0].id
+        Write-Host "  DNS record already exists - updating it." -ForegroundColor Yellow
+        $dnsBody = @{ type = "CNAME"; name = $hostname; content = "${tunnelId}.cfargotunnel.com"; proxied = $true } | ConvertTo-Json
+        Cf-Put "/zones/${zoneId}/dns_records/${existingDnsId}" $dnsBody | Out-Null
+    } else {
+        $dnsBody = @{ type = "CNAME"; name = $hostname; content = "${tunnelId}.cfargotunnel.com"; proxied = $true } | ConvertTo-Json
+        Cf-Post "/zones/${zoneId}/dns_records" $dnsBody | Out-Null
+    }
+    Write-Host "  DNS record set." -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "  Retrieving tunnel token..." -ForegroundColor Green
+    $tokenResp = Cf-Get "/accounts/${accountId}/cfd_tunnel/${tunnelId}/token"
+    $token = $tokenResp.result
+    if (-not $token) {
+        Write-Host "  Failed to get tunnel token. Aborting." -ForegroundColor Red
+        return $null
+    }
+    Write-Host "  Tunnel setup complete!" -ForegroundColor Green
+
+    return @{
+        Token = $token
+        ProxyUrl = "https://$hostname"
+    }
+}
+
 # --------------- Install ---------------
 function Do-Install {
     Write-Host ""
-    Write-Host "--- Step 1/5: Gather configuration ---" -ForegroundColor Green
+    Write-Host "--- Step 1/6: Tunnel setup ---" -ForegroundColor Green
+    Write-Host ""
 
-    $tunnelToken = Read-Host "Enter your Cloudflare Tunnel token"
-    if ([string]::IsNullOrWhiteSpace($tunnelToken)) {
-        Write-Host "Tunnel token is required. Aborting." -ForegroundColor Red
-        return
+    $tunnelToken = ""
+    $proxyUrl = ""
+    $apiKey = ""
+
+    if ($script:CfToken -and $script:TunnelName) {
+        $setupMode = "auto"
+    } else {
+        Write-Host "  How would you like to configure the Cloudflare Tunnel?"
+        Write-Host ""
+        Write-Host "    a) I have a tunnel token already"
+        Write-Host "    b) Create a new tunnel automatically (requires Cloudflare API token)"
+        Write-Host ""
+        $setupMode = Read-Host "  Choose (a/b)"
     }
 
-    $apiKey = Read-Host "Enter the API key for the print proxy"
-    if ([string]::IsNullOrWhiteSpace($apiKey)) {
-        Write-Host "API key is required. Aborting." -ForegroundColor Red
-        return
+    switch ($setupMode) {
+        "a" {
+            $tunnelToken = Read-Host "Enter your Cloudflare Tunnel token"
+            if ([string]::IsNullOrWhiteSpace($tunnelToken)) {
+                Write-Host "Tunnel token is required. Aborting." -ForegroundColor Red
+                return
+            }
+            $apiKey = Read-Host "Enter the API key for the print proxy"
+            if ([string]::IsNullOrWhiteSpace($apiKey)) {
+                Write-Host "API key is required. Aborting." -ForegroundColor Red
+                return
+            }
+        }
+        { $_ -eq "b" -or $_ -eq "auto" } {
+            $script:cfApiToken = $script:CfToken
+            if ([string]::IsNullOrWhiteSpace($script:cfApiToken)) {
+                $script:cfApiToken = Read-Host "Enter your Cloudflare API token"
+                if ([string]::IsNullOrWhiteSpace($script:cfApiToken)) {
+                    Write-Host "Cloudflare API token is required. Aborting." -ForegroundColor Red
+                    return
+                }
+            }
+
+            $tName = $script:TunnelName
+            if ([string]::IsNullOrWhiteSpace($tName)) {
+                $tName = Read-Host "Enter a tunnel name (e.g. alvin-office)"
+                if ([string]::IsNullOrWhiteSpace($tName)) {
+                    Write-Host "Tunnel name is required. Aborting." -ForegroundColor Red
+                    return
+                }
+            }
+
+            $result = Setup-Tunnel $tName
+            if (-not $result) {
+                Write-Host "Tunnel setup failed. Aborting." -ForegroundColor Red
+                return
+            }
+            $tunnelToken = $result.Token
+            $proxyUrl = $result.ProxyUrl
+
+            $apiKey = $script:ProxyApiKey
+            if ([string]::IsNullOrWhiteSpace($apiKey)) {
+                $apiKey = Generate-ApiKey
+                Write-Host "  Generated API key: $apiKey" -ForegroundColor Green
+            }
+        }
+        default {
+            Write-Host "Invalid choice. Aborting." -ForegroundColor Red
+            return
+        }
     }
 
     Write-Host ""
-    Write-Host "--- Step 2/5: Create install directory ---" -ForegroundColor Green
+    Write-Host "--- Step 2/6: Create install directory ---" -ForegroundColor Green
     if (!(Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir | Out-Null }
     Write-Host "  Directory: $InstallDir"
 
     Write-Host ""
-    Write-Host "--- Step 3/5: Download binaries ---" -ForegroundColor Green
+    Write-Host "--- Step 3/6: Download binaries ---" -ForegroundColor Green
 
     # printer-proxy.exe
     $release = Get-LatestRelease
@@ -106,13 +310,13 @@ function Do-Install {
     Download-File $CfUrl "$InstallDir\cloudflared.exe"
 
     Write-Host ""
-    Write-Host "--- Step 4/5: Create configuration ---" -ForegroundColor Green
+    Write-Host "--- Step 4/6: Create configuration ---" -ForegroundColor Green
     $envContent = "API_KEY=$apiKey`nPORT=9191"
     Set-Content -Path "$InstallDir\.env" -Value $envContent -Encoding UTF8
     Write-Host "  Created $InstallDir\.env"
 
     Write-Host ""
-    Write-Host "--- Step 5/5: Install Windows Services ---" -ForegroundColor Green
+    Write-Host "--- Step 5/6: Install Windows Services ---" -ForegroundColor Green
 
     # Remove existing services if present
     Stop-And-Remove-Service $ServiceName
@@ -140,6 +344,7 @@ function Do-Install {
 
     # Health check
     Write-Host ""
+    Write-Host "--- Step 6/6: Verify ---" -ForegroundColor Green
     Write-Host "Waiting for services to start..." -ForegroundColor Yellow
     Start-Sleep -Seconds 3
     try {
@@ -150,11 +355,24 @@ function Do-Install {
     }
 
     Write-Host ""
-    Write-Host "Installation complete!" -ForegroundColor Green
+    Write-Host "====================================" -ForegroundColor Cyan
+    Write-Host "  Installation Complete!" -ForegroundColor Cyan
+    Write-Host "====================================" -ForegroundColor Cyan
+    Write-Host ""
     Write-Host "  Install directory : $InstallDir" -ForegroundColor White
     Write-Host "  Proxy service     : $ServiceName" -ForegroundColor White
     Write-Host "  Tunnel service    : $CfServiceName" -ForegroundColor White
     Write-Host "  Logs              : $InstallDir\proxy.log / cloudflared.log" -ForegroundColor White
+
+    if ($proxyUrl) {
+        Write-Host ""
+        Write-Host "====================================" -ForegroundColor Cyan
+        Write-Host "  Enter these in Portal > Print Proxy" -ForegroundColor Cyan
+        Write-Host "====================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Proxy URL : $proxyUrl" -ForegroundColor White
+        Write-Host "  API Key   : $apiKey" -ForegroundColor White
+    }
 }
 
 # --------------- Update ---------------

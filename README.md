@@ -12,9 +12,9 @@ Portal / Handheld (HTTPS)
         │
         ▼
   printer-proxy (:9191)
-        │
+        │  raw TCP :9100
         ▼
-  Zebra Printer (HTTP :9100)
+  Zebra Printer
 ```
 
 ## API
@@ -48,14 +48,16 @@ cd packages/printer-proxy
 go build -o printer-proxy
 ```
 
-### 2. Create a Cloudflare Tunnel
+### 2. Create a Cloudflare API token (one-time)
 
-1. Go to [Cloudflare Zero Trust Dashboard](https://one.dash.cloudflare.com/) → Networks → Tunnels
-2. Create a new tunnel and copy the **tunnel token**
-3. Add a **Public Hostname** route:
-   - Subdomain: e.g. `print`
-   - Domain: your domain
-   - Service: `http://localhost:9191`
+Go to [Cloudflare Dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens) and create a token with:
+
+| Scope   | Resource          | Permission |
+|---------|-------------------|------------|
+| Account | Cloudflare Tunnel | Edit       |
+| Zone    | DNS               | Edit       |
+
+Save this token securely — it will be used by the installer to create tunnels automatically.
 
 ### 3. Tag a release
 
@@ -66,31 +68,102 @@ git push origin v1.0.0
 
 GitHub Actions will build binaries for Windows (amd64), macOS (amd64 + arm64) and create a release with installer packages for both platforms.
 
-### 4. Configure the API
+### 4. Configure the Portal
 
-In the Portal, navigate to **Print Proxy** in the sidebar and enter:
-- **Proxy URL**: The Cloudflare Tunnel HTTPS URL (e.g. `https://print.example.com`)
-- **API Key**: The shared secret you chose
+After running the installer on a client machine (see below), it will output a **Proxy URL** and **API Key**. Enter these in the Portal under **Print Proxy** in the sidebar.
 
 ---
 
-## Quick Install (One-Liner)
+## Quick Install — Automated Tunnel (Recommended)
 
-Give the client one of these commands. The interactive installer will prompt for the Cloudflare Tunnel Token and API Key.
+The installer can create the Cloudflare Tunnel, DNS record, and everything else automatically. All you need is the Cloudflare API token from step 2 above.
 
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.sh | sudo bash
+curl -fsSL https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.sh | bash
 ```
 
-### Windows (PowerShell — run as Administrator)
+### Windows (PowerShell)
 
 ```powershell
 irm https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.ps1 | iex
 ```
 
-> The Windows script will auto-elevate to administrator if not already elevated.
+During install, choose option **(b) Create a new tunnel automatically** and provide:
+- **Cloudflare API token** — from step 2
+- **Tunnel name** — e.g. `alvin-office` (will create `print-proxy-alvin-office.kwtech.dev`)
+
+The installer will:
+1. Create (or reuse) the Cloudflare Tunnel
+2. Configure ingress rules (`hostname → http://localhost:9191`)
+3. Create a DNS CNAME record (`print-proxy-<name>.kwtech.dev`)
+4. Auto-generate a printer proxy API key
+5. Download and install `printer-proxy` + `cloudflared` as system services
+6. Output the **Proxy URL** and **API Key** to enter in the Portal
+
+### CLI Arguments (non-interactive)
+
+Both scripts accept arguments to skip prompts:
+
+**macOS:**
+```bash
+curl -fsSL .../install.sh | bash -s -- --tunnel-name alvin-office --cf-token YOUR_TOKEN
+```
+
+**Windows:**
+```powershell
+# Save and run with parameters
+irm .../install.ps1 -OutFile install.ps1
+.\install.ps1 -TunnelName "alvin-office" -CfToken "YOUR_TOKEN"
+```
+
+| Argument (bash) | Argument (PowerShell) | Description |
+|------------------|-----------------------|-------------|
+| `--tunnel-name`  | `-TunnelName`         | Tunnel name (subdomain: `print-proxy-<name>.kwtech.dev`) |
+| `--cf-token`     | `-CfToken`            | Cloudflare API token |
+| `--api-key`      | `-ProxyApiKey`        | Printer proxy API key (auto-generated if omitted) |
+
+---
+
+## Quick Install — Manual Token
+
+If you already have a Cloudflare Tunnel token (created manually in the dashboard), choose option **(a) I have a tunnel token already** during install and paste the token + API key when prompted.
+
+---
+
+## Client Setup (macOS)
+
+### Prerequisites
+
+- macOS 12 or later
+- Internet connection
+
+### Option A: One-liner (recommended)
+
+```bash
+curl -fsSL https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.sh | bash
+```
+
+### Option B: Download zip
+
+1. Download `printer-proxy-installer-macos.zip` from the latest [GitHub Release](../../releases/latest)
+2. Extract the zip
+3. Run `sudo bash install.sh` in Terminal
+
+### Installed components
+
+- Binary + config: `/usr/local/printer-proxy/`
+- Services: `com.kwtech.printer-proxy`, `com.kwtech.cloudflared-tunnel` (launchd)
+- Logs: `/usr/local/printer-proxy/proxy.log` and `cloudflared.log`
+
+### Updating
+
+Run the installer and choose **2) Update**.
+
+### Uninstalling
+
+Run the installer and choose **3) Uninstall**, then type `YES` to confirm.
 
 ---
 
@@ -109,78 +182,27 @@ Open PowerShell and paste:
 irm https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.ps1 | iex
 ```
 
+> The script will auto-elevate to administrator if not already elevated.
+
 ### Option B: Download zip
 
 1. Download `printer-proxy-installer-windows.zip` from the latest [GitHub Release](../../releases/latest)
 2. Extract the zip
 3. **Double-click `install.bat`**
 
-### Interactive installer
+### Installed components
 
-Both options launch the same interactive installer:
-
-1. Choose option **1) Install**
-2. Paste the **Cloudflare Tunnel Token** when prompted
-3. Paste the **API Key** when prompted
-4. Wait for the health check to pass
-
-The installer will:
-- Download `printer-proxy.exe`, `nssm.exe`, and `cloudflared.exe`
-- Install both as Windows Services that auto-start on boot
-- Create log files at `C:\printer-proxy\proxy.log` and `C:\printer-proxy\cloudflared.log`
+- Binary + config: `C:\printer-proxy\`
+- Services: `PrinterProxy`, `CloudflaredTunnel` (Windows Services via NSSM)
+- Logs: `C:\printer-proxy\proxy.log` and `cloudflared.log`
 
 ### Updating
 
-Run the installer again (either method) and choose option **2) Update**.
+Run the installer and choose **2) Update**.
 
 ### Uninstalling
 
-Run the installer again and choose option **3) Uninstall**, then type `YES` to confirm.
-
----
-
-## Client Setup (macOS)
-
-### Prerequisites
-
-- macOS 12 or later
-- Internet connection
-
-### Option A: One-liner (recommended)
-
-Open Terminal and paste:
-
-```bash
-curl -fsSL https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/install.sh | sudo bash
-```
-
-### Option B: Download zip
-
-1. Download `printer-proxy-installer-macos.zip` from the latest [GitHub Release](../../releases/latest)
-2. Extract the zip
-3. Run `sudo bash install.sh` in Terminal
-
-### Interactive installer
-
-Both options launch the same interactive installer:
-
-1. Choose option **1) Install**
-2. Paste the **Cloudflare Tunnel Token** when prompted
-3. Paste the **API Key** when prompted
-4. Wait for the health check to pass
-
-The installer will:
-- Download `printer-proxy` (correct architecture auto-detected) and `cloudflared`
-- Install both as launchd services that auto-start on login
-- Create log files at `/usr/local/printer-proxy/proxy.log` and `/usr/local/printer-proxy/cloudflared.log`
-
-### Updating
-
-Run `sudo bash install.sh` (or the one-liner) and choose option **2) Update**.
-
-### Uninstalling
-
-Run the installer and choose option **3) Uninstall**, then type `YES` to confirm.
+Run the installer and choose **3) Uninstall**, then type `YES` to confirm.
 
 ---
 
