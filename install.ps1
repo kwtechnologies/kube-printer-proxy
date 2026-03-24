@@ -108,23 +108,23 @@ function Setup-Tunnel($tunnelName) {
     $hostname = "$subdomain.$CfDomain"
 
     Write-Host ""
-    Write-Host "  Verifying Cloudflare API token..." -ForegroundColor Green
-    $verify = Cf-Get "/user/tokens/verify"
-    if ($verify.result.status -ne "active") {
-        Write-Host "  API token is not active (status: $($verify.result.status)). Aborting." -ForegroundColor Red
+    Write-Host "  Verifying Cloudflare API token and fetching account..." -ForegroundColor Green
+    try {
+        $accounts = Cf-Get "/accounts?per_page=1"
+    } catch {
+        Write-Host "  API token is invalid or lacks permissions: $($_.Exception.Message)" -ForegroundColor Red
         return $null
     }
-    Write-Host "  Token is valid." -ForegroundColor Green
-
-    Write-Host ""
-    Write-Host "  Fetching account ID..." -ForegroundColor Green
-    $accounts = Cf-Get "/accounts?per_page=1"
+    if (-not $accounts.success) {
+        Write-Host "  API token verification failed. Errors: $($accounts.errors | ConvertTo-Json -Compress)" -ForegroundColor Red
+        return $null
+    }
     $accountId = $accounts.result[0].id
     if (-not $accountId) {
         Write-Host "  Could not determine account ID. Aborting." -ForegroundColor Red
         return $null
     }
-    Write-Host "  Account: $accountId"
+    Write-Host "  Token verified. Account: $accountId" -ForegroundColor Green
 
     Write-Host ""
     Write-Host "  Fetching zone ID for ${CfDomain}..." -ForegroundColor Green

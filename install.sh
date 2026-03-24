@@ -94,16 +94,16 @@ json_val() {
 }
 
 cf_get() {
-  curl -fsSL -H "Authorization: Bearer ${CF_TOKEN}" "${CF_API_BASE}$1"
+  curl -sS -H "Authorization: Bearer ${CF_TOKEN}" "${CF_API_BASE}$1"
 }
 
 cf_post() {
-  curl -fsSL -X POST -H "Authorization: Bearer ${CF_TOKEN}" \
+  curl -sS -X POST -H "Authorization: Bearer ${CF_TOKEN}" \
     -H "Content-Type: application/json" -d "$2" "${CF_API_BASE}$1"
 }
 
 cf_put() {
-  curl -fsSL -X PUT -H "Authorization: Bearer ${CF_TOKEN}" \
+  curl -sS -X PUT -H "Authorization: Bearer ${CF_TOKEN}" \
     -H "Content-Type: application/json" -d "$2" "${CF_API_BASE}$1"
 }
 
@@ -115,26 +115,24 @@ setup_tunnel() {
   local hostname="${subdomain}.${CF_DOMAIN}"
 
   echo ""
-  info "  Verifying Cloudflare API token..."
-  local verify
-  verify="$(cf_get "/user/tokens/verify")"
-  local status
-  status="$(echo "$verify" | json_val "d['result']['status']")"
-  if [ "$status" != "active" ]; then
-    err "  API token is not active (status: ${status}). Aborting."; return 1
-  fi
-  info "  Token is valid."
-
-  echo ""
-  info "  Fetching account ID..."
+  info "  Verifying Cloudflare API token and fetching account..."
   local accounts
   accounts="$(cf_get "/accounts?per_page=1")"
+  local cf_success
+  cf_success="$(echo "$accounts" | json_val "d.get('success', False)")"
+  if [ "$cf_success" != "True" ]; then
+    err "  API token is invalid or lacks permissions."
+    local cf_errors
+    cf_errors="$(echo "$accounts" | json_val "d.get('errors', [])")"
+    err "  Errors: $cf_errors"
+    return 1
+  fi
   local account_id
   account_id="$(echo "$accounts" | json_val "d['result'][0]['id']")"
   if [ -z "$account_id" ]; then
     err "  Could not determine account ID. Aborting."; return 1
   fi
-  echo "  Account: $account_id"
+  info "  Token verified. Account: $account_id"
 
   echo ""
   info "  Fetching zone ID for ${CF_DOMAIN}..."
