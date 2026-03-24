@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -82,18 +81,16 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	printerURL := fmt.Sprintf("http://%s:9100/pstprnt", req.IP)
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(printerURL, "text/plain", strings.NewReader(req.ZPL))
+	addr := fmt.Sprintf("%s:9100", req.IP)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to reach printer: %v", err))
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to connect to printer: %v", err))
 		return
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("printer returned status %d", resp.StatusCode))
+	defer conn.Close()
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(conn, req.ZPL); err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to send data to printer: %v", err))
 		return
 	}
 
