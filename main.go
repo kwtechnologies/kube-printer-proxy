@@ -93,6 +93,13 @@ func handlePrint(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("failed to send data to printer: %v", err))
 		return
 	}
+	// Half-close the write side so the printer knows all data has been sent,
+	// then drain any response bytes before fully closing.
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.CloseWrite()
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	io.Copy(io.Discard, conn)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
