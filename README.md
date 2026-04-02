@@ -91,11 +91,13 @@ irm https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/downloa
 ```
 
 The installer will guide you through:
-1. Choosing **Install**, **Update**, or **Uninstall**
+1. Choosing **Install**, **Update**, **Doctor**, or **Uninstall**
 2. Creating (or reusing) a Cloudflare Tunnel
 3. Configuring DNS and ingress automatically
 4. Downloading and installing all services
 5. Displaying the **Proxy URL** and **API Key** to enter in Portal
+
+On Windows, **Doctor** re-downloads the binaries and recreates both Windows services using the existing `API_KEY` and Cloudflare tunnel token recovered from the current install.
 
 ### What you'll need during install
 

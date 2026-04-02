@@ -3,6 +3,8 @@ import { randomBytes } from "crypto";
 import { existsSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
+import { stdin as input, stdout as output } from "process";
+import { createInterface } from "readline/promises";
 
 import * as p from "@clack/prompts";
 
@@ -185,6 +187,32 @@ async function doUpdate(): Promise<void> {
   }
 }
 
+async function doDoctor(): Promise<void> {
+  const spin = p.spinner();
+  try {
+    const services = await import("./service-windows.js");
+
+    spin.start("Repairing Windows services...");
+    await services.doctorServices((msg) => spin.message(msg));
+    spin.stop("Repair complete.");
+
+    spin.start("Running health check...");
+    await new Promise((r) => setTimeout(r, 3000));
+    const healthy = await healthCheck();
+    if (healthy) {
+      spin.stop("Health check passed!");
+    } else {
+      spin.stop(
+        "Health check did not pass yet -- the service may still be starting.",
+      );
+      p.log.warn(`Check logs at ${join(INSTALL_DIR, "proxy.log")}`);
+    }
+  } catch (err) {
+    spin.stop("Repair failed.");
+    p.log.error(err instanceof Error ? err.message : String(err));
+  }
+}
+
 async function doUninstall(): Promise<void> {
   const confirmed = await p.confirm({
     message: "This will remove all services and files. Continue?",
@@ -221,26 +249,48 @@ function ensureElevated(): void {
   // Windows elevation is handled by the bootstrap setup.ps1
 }
 
+async function waitForExitOnWindows(): Promise<void> {
+  if (!isWindows) return;
+
+  const rl = createInterface({ input, output });
+  try {
+    await rl.question("Press Enter to exit...");
+  } finally {
+    rl.close();
+  }
+}
+
 async function main(): Promise<void> {
   ensureElevated();
 
   p.intro("Printer Proxy Installer");
 
+  const options = [
+    { value: "install", label: "Install", hint: "fresh installation" },
+    {
+      value: "update",
+      label: "Update",
+      hint: "download latest proxy binary",
+    },
+    ...(isWindows
+      ? [
+          {
+            value: "doctor",
+            label: "Doctor",
+            hint: "reinstall services using existing credentials",
+          },
+        ]
+      : []),
+    {
+      value: "uninstall",
+      label: "Uninstall",
+      hint: "remove everything",
+    },
+  ] as const;
+
   const action = await p.select({
     message: "What would you like to do?",
-    options: [
-      { value: "install", label: "Install", hint: "fresh installation" },
-      {
-        value: "update",
-        label: "Update",
-        hint: "download latest proxy binary",
-      },
-      {
-        value: "uninstall",
-        label: "Uninstall",
-        hint: "remove everything",
-      },
-    ],
+    options,
   });
 
   if (p.isCancel(action)) {
@@ -255,15 +305,23 @@ async function main(): Promise<void> {
     case "update":
       await doUpdate();
       break;
+    case "doctor":
+      await doDoctor();
+      break;
     case "uninstall":
       await doUninstall();
       break;
   }
 
   p.outro("Done!");
+  await waitForExitOnWindows();
 }
 
 main().catch((err) => {
   p.log.error(err instanceof Error ? err.message : String(err));
+  if (isWindows) {
+    waitForExitOnWindows().finally(() => process.exit(1));
+    return;
+  }
   process.exit(1);
 });

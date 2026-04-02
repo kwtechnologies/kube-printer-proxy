@@ -10,15 +10,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$InstallDir   = "C:\printer-proxy"
-$ServiceName  = "PrinterProxy"
+$InstallDir = "C:\printer-proxy"
+$ServiceName = "PrinterProxy"
 $CfServiceName = "CloudflaredTunnel"
-$NssmUrl      = "https://github.com/dkxce/NSSM/releases/download/v2.25/NSSM_v2.25.zip"
+$NssmUrl = "https://github.com/dkxce/NSSM/releases/download/v2.25/NSSM_v2.25.zip"
 $NssmUrlFallback = "https://nssm.cc/release/nssm-2.24.zip"
-$CfUrl        = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-$GhRepo       = "kwtechnologies/kube-printer-proxy"
-$CfDomain     = "kwtech.dev"
-$CfApiBase    = "https://api.cloudflare.com/client/v4"
+$CfUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+$GhRepo = "kwtechnologies/kube-printer-proxy"
+$CfDomain = "kwtech.dev"
+$CfApiBase = "https://api.cloudflare.com/client/v4"
 
 # --------------- Self-elevate to admin ---------------
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -26,7 +26,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     if ($PSCommandPath) {
         $relaunchArgs = "-ExecutionPolicy Bypass -File `"$PSCommandPath`""
         if ($TunnelName) { $relaunchArgs += " -TunnelName `"$TunnelName`"" }
-        if ($CfToken)    { $relaunchArgs += " -CfToken `"$CfToken`"" }
+        if ($CfToken) { $relaunchArgs += " -CfToken `"$CfToken`"" }
         if ($ProxyApiKey) { $relaunchArgs += " -ProxyApiKey `"$ProxyApiKey`"" }
     } else {
         $tempScript = "$env:TEMP\printer-proxy-install.ps1"
@@ -35,7 +35,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
         (New-Object System.Net.WebClient).DownloadFile($scriptUrl, $tempScript)
         $relaunchArgs = "-ExecutionPolicy Bypass -File `"$tempScript`""
         if ($TunnelName) { $relaunchArgs += " -TunnelName `"$TunnelName`"" }
-        if ($CfToken)    { $relaunchArgs += " -CfToken `"$CfToken`"" }
+        if ($CfToken) { $relaunchArgs += " -CfToken `"$CfToken`"" }
         if ($ProxyApiKey) { $relaunchArgs += " -ProxyApiKey `"$ProxyApiKey`"" }
     }
     Start-Process powershell -Verb RunAs -ArgumentList $relaunchArgs
@@ -52,8 +52,7 @@ function Write-Banner {
 }
 
 function Get-LatestRelease {
-    $release = Invoke-RestMethod "https://api.github.com/repos/$GhRepo/releases/latest"
-    return $release
+    Invoke-RestMethod "https://api.github.com/repos/$GhRepo/releases/latest"
 }
 
 function Download-File($url, $dest) {
@@ -66,42 +65,231 @@ function Download-File($url, $dest) {
 function Stop-And-Remove-Service($name) {
     $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
     if ($svc) {
-        if ($svc.Status -eq "Running") {
+        if ((Test-Path "$InstallDir\nssm.exe") -and $svc.Status -eq "Running") {
             Write-Host "  Stopping service $name..." -ForegroundColor Yellow
             & "$InstallDir\nssm.exe" stop $name 2>$null
             Start-Sleep -Seconds 2
         }
-        Write-Host "  Removing service $name..." -ForegroundColor Yellow
-        & "$InstallDir\nssm.exe" remove $name confirm 2>$null
+        if (Test-Path "$InstallDir\nssm.exe") {
+            Write-Host "  Removing service $name..." -ForegroundColor Yellow
+            & "$InstallDir\nssm.exe" remove $name confirm 2>$null
+        }
     }
 }
 
 function Generate-ApiKey {
     $bytes = New-Object byte[] 16
     [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    return ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+    ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+}
+
+function Get-RegistryValue($serviceName, $valueName) {
+    try {
+        $out = & reg.exe query "HKLM\SYSTEM\CurrentControlSet\Services\$serviceName\Parameters" /v $valueName 2>$null
+        if (-not $out) { return $null }
+
+        foreach ($line in $out) {
+            $trimmed = $line.Trim()
+            if ($trimmed -like "$valueName*") {
+                $parts = $trimmed -split '\s{2,}', 3
+                if ($parts.Count -ge 3) {
+                    return $parts[2].Trim()
+                }
+            }
+        }
+    } catch {}
+
+    return $null
+}
+
+function Get-EnvValue($path, $name) {
+    if (!(Test-Path $path)) { return $null }
+
+    foreach ($line in Get-Content -Path $path) {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line.Trim().StartsWith("#")) {
+            continue
+        }
+
+        $parts = $line -split "=", 2
+        if ($parts.Count -eq 2 -and $parts[0].Trim() -eq $name) {
+            return $parts[1].Trim()
+        }
+    }
+
+    return $null
+}
+
+function Get-ExistingApiKey {
+    $apiKey = Get-EnvValue "$InstallDir\.env" "API_KEY"
+    if (-not [string]::IsNullOrWhiteSpace($apiKey)) {
+        return $apiKey
+    }
+
+    $envExtra = Get-RegistryValue $ServiceName "AppEnvironmentExtra"
+    if ($envExtra -match 'API_KEY=([^\s]+)') {
+        return $matches[1]
+    }
+
+    return $null
+}
+
+function Get-ExistingTunnelToken {
+    $params = Get-RegistryValue $CfServiceName "AppParameters"
+    if ($params -match '--token\s+("?)([^"\s]+)\1') {
+        return $matches[2]
+    }
+
+    return $null
+}
+
+function Ensure-InstallDir {
+    if (!(Test-Path $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir | Out-Null
+    }
+    Write-Host "  Directory: $InstallDir"
+}
+
+function Install-Binaries {
+    Write-Host ""
+    Write-Host "--- Step 3/6: Download binaries ---" -ForegroundColor Green
+
+    $release = Get-LatestRelease
+    $exeAsset = $release.assets | Where-Object { $_.name -eq "printer-proxy.exe" }
+    if (-not $exeAsset) {
+        throw "Could not find printer-proxy.exe in latest release."
+    }
+    Download-File $exeAsset.browser_download_url "$InstallDir\printer-proxy.exe"
+
+    $nssmZip = "$env:TEMP\nssm.zip"
+    try {
+        Download-File $NssmUrl $nssmZip
+    } catch {
+        Write-Host "  Primary mirror failed, trying fallback..." -ForegroundColor Yellow
+        Download-File $NssmUrlFallback $nssmZip
+    }
+    Expand-Archive -Path $nssmZip -DestinationPath "$env:TEMP\nssm" -Force
+    $nssmExe = Get-ChildItem "$env:TEMP\nssm" -Recurse -Filter "nssm.exe" | Where-Object { $_.DirectoryName -match "win64" } | Select-Object -First 1
+    if (-not $nssmExe) {
+        throw "Could not find nssm.exe in archive."
+    }
+    Copy-Item $nssmExe.FullName "$InstallDir\nssm.exe" -Force
+
+    Download-File $CfUrl "$InstallDir\cloudflared.exe"
+}
+
+function Write-ProxyConfig($apiKey) {
+    Write-Host ""
+    Write-Host "--- Step 4/6: Create configuration ---" -ForegroundColor Green
+    $envContent = "API_KEY=$apiKey`nPORT=9191"
+    Set-Content -Path "$InstallDir\.env" -Value $envContent -Encoding UTF8
+    Write-Host "  Created $InstallDir\.env"
+}
+
+function Install-WindowsServices($apiKey, $tunnelToken) {
+    Write-Host ""
+    Write-Host "--- Step 5/6: Install Windows Services ---" -ForegroundColor Green
+
+    Stop-And-Remove-Service $ServiceName
+    Stop-And-Remove-Service $CfServiceName
+
+    & "$InstallDir\nssm.exe" install $ServiceName "$InstallDir\printer-proxy.exe"
+    & "$InstallDir\nssm.exe" set $ServiceName AppDirectory "$InstallDir"
+    & "$InstallDir\nssm.exe" set $ServiceName AppEnvironmentExtra "+API_KEY=$apiKey" "+PORT=9191"
+    & "$InstallDir\nssm.exe" set $ServiceName DisplayName "Printer Proxy"
+    & "$InstallDir\nssm.exe" set $ServiceName Description "Local ZPL print relay for Kube"
+    & "$InstallDir\nssm.exe" set $ServiceName Start SERVICE_AUTO_START
+    & "$InstallDir\nssm.exe" set $ServiceName AppStdout "$InstallDir\proxy.log"
+    & "$InstallDir\nssm.exe" set $ServiceName AppStderr "$InstallDir\proxy.log"
+    & "$InstallDir\nssm.exe" start $ServiceName
+
+    & "$InstallDir\nssm.exe" install $CfServiceName "$InstallDir\cloudflared.exe" "tunnel run --token $tunnelToken"
+    & "$InstallDir\nssm.exe" set $CfServiceName DisplayName "Cloudflared Tunnel"
+    & "$InstallDir\nssm.exe" set $CfServiceName Description "Cloudflare tunnel for Printer Proxy"
+    & "$InstallDir\nssm.exe" set $CfServiceName Start SERVICE_AUTO_START
+    & "$InstallDir\nssm.exe" set $CfServiceName AppStdout "$InstallDir\cloudflared.log"
+    & "$InstallDir\nssm.exe" set $CfServiceName AppStderr "$InstallDir\cloudflared.log"
+    & "$InstallDir\nssm.exe" start $CfServiceName
+}
+
+function Run-HealthCheck {
+    Write-Host ""
+    Write-Host "--- Step 6/6: Verify ---" -ForegroundColor Green
+    Write-Host "Waiting for services to start..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 3
+    try {
+        $health = Invoke-RestMethod "http://localhost:9191/health" -TimeoutSec 5
+        Write-Host "Health check passed: $($health.status)" -ForegroundColor Green
+    } catch {
+        Write-Host "Health check failed - the service may still be starting. Check $InstallDir\proxy.log" -ForegroundColor Yellow
+    }
+}
+
+function Show-InstallSummary($apiKey, $proxyUrl) {
+    Write-Host ""
+    Write-Host "====================================" -ForegroundColor Cyan
+    Write-Host "  Installation Complete!" -ForegroundColor Cyan
+    Write-Host "====================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Install directory : $InstallDir" -ForegroundColor White
+    Write-Host "  Proxy service     : $ServiceName" -ForegroundColor White
+    Write-Host "  Tunnel service    : $CfServiceName" -ForegroundColor White
+    Write-Host "  Logs              : $InstallDir\proxy.log / cloudflared.log" -ForegroundColor White
+
+    if ($proxyUrl) {
+        Write-Host ""
+        Write-Host "====================================" -ForegroundColor Cyan
+        Write-Host "  Enter these in Portal > Print Proxy" -ForegroundColor Cyan
+        Write-Host "====================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  Proxy URL : $proxyUrl" -ForegroundColor White
+        Write-Host "  API Key   : $apiKey" -ForegroundColor White
+        Write-Host ""
+
+        $credContent = "Printer Proxy Credentials`r`n" +
+            "========================`r`n" +
+            "Proxy URL : $proxyUrl`r`n" +
+            "API Key   : $apiKey`r`n" +
+            "`r`nEnter these values in Portal > Print Proxy settings."
+        $credFile = "$InstallDir\credentials.txt"
+        Set-Content -Path $credFile -Value $credContent -Encoding UTF8
+        Write-Host "  Credentials saved to: $credFile" -ForegroundColor Yellow
+
+        $desktopCred = [Environment]::GetFolderPath("Desktop") + "\printer-proxy-credentials.txt"
+        Set-Content -Path $desktopCred -Value $credContent -Encoding UTF8
+        Write-Host "  Credentials also saved to: $desktopCred" -ForegroundColor Yellow
+    }
+}
+
+function Reinstall-WithCredentials($apiKey, $tunnelToken) {
+    Write-Host ""
+    Write-Host "--- Step 2/6: Create install directory ---" -ForegroundColor Green
+    Ensure-InstallDir
+    Install-Binaries
+    Write-ProxyConfig $apiKey
+    Install-WindowsServices $apiKey $tunnelToken
+    Run-HealthCheck
 }
 
 # --------------- Cloudflare API helpers ---------------
 function Cf-Get($endpoint) {
     $headers = @{ "Authorization" = "Bearer $script:cfApiToken" }
-    return Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Get
+    Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Get
 }
 
 function Cf-Post($endpoint, $body) {
     $headers = @{
         "Authorization" = "Bearer $script:cfApiToken"
-        "Content-Type"  = "application/json"
+        "Content-Type" = "application/json"
     }
-    return Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Post -Body $body
+    Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Post -Body $body
 }
 
 function Cf-Put($endpoint, $body) {
     $headers = @{
         "Authorization" = "Bearer $script:cfApiToken"
-        "Content-Type"  = "application/json"
+        "Content-Type" = "application/json"
     }
-    return Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Put -Body $body
+    Invoke-RestMethod -Uri "${CfApiBase}${endpoint}" -Headers $headers -Method Put -Body $body
 }
 
 function Setup-Tunnel($tunnelName) {
@@ -216,7 +404,7 @@ function Setup-Tunnel($tunnelName) {
     }
     Write-Host "  Tunnel setup complete!" -ForegroundColor Green
 
-    return @{
+    @{
         Token = $token
         ProxyUrl = "https://$hostname"
     }
@@ -295,118 +483,8 @@ function Do-Install {
         }
     }
 
-    Write-Host ""
-    Write-Host "--- Step 2/6: Create install directory ---" -ForegroundColor Green
-    if (!(Test-Path $InstallDir)) { New-Item -ItemType Directory -Path $InstallDir | Out-Null }
-    Write-Host "  Directory: $InstallDir"
-
-    Write-Host ""
-    Write-Host "--- Step 3/6: Download binaries ---" -ForegroundColor Green
-
-    # printer-proxy.exe
-    $release = Get-LatestRelease
-    $exeAsset = $release.assets | Where-Object { $_.name -eq "printer-proxy.exe" }
-    if (-not $exeAsset) {
-        Write-Host "Could not find printer-proxy.exe in latest release. Aborting." -ForegroundColor Red
-        return
-    }
-    Download-File $exeAsset.browser_download_url "$InstallDir\printer-proxy.exe"
-
-    # nssm.exe (try GitHub mirror first, fallback to nssm.cc)
-    $nssmZip = "$env:TEMP\nssm.zip"
-    try {
-        Download-File $NssmUrl $nssmZip
-    } catch {
-        Write-Host "  Primary mirror failed, trying fallback..." -ForegroundColor Yellow
-        Download-File $NssmUrlFallback $nssmZip
-    }
-    Expand-Archive -Path $nssmZip -DestinationPath "$env:TEMP\nssm" -Force
-    $nssmExe = Get-ChildItem "$env:TEMP\nssm" -Recurse -Filter "nssm.exe" | Where-Object { $_.DirectoryName -match "win64" } | Select-Object -First 1
-    Copy-Item $nssmExe.FullName "$InstallDir\nssm.exe" -Force
-
-    # cloudflared.exe
-    Download-File $CfUrl "$InstallDir\cloudflared.exe"
-
-    Write-Host ""
-    Write-Host "--- Step 4/6: Create configuration ---" -ForegroundColor Green
-    $envContent = "API_KEY=$apiKey`nPORT=9191"
-    Set-Content -Path "$InstallDir\.env" -Value $envContent -Encoding UTF8
-    Write-Host "  Created $InstallDir\.env"
-
-    Write-Host ""
-    Write-Host "--- Step 5/6: Install Windows Services ---" -ForegroundColor Green
-
-    # Remove existing services if present
-    Stop-And-Remove-Service $ServiceName
-    Stop-And-Remove-Service $CfServiceName
-
-    # Install printer-proxy service
-    & "$InstallDir\nssm.exe" install $ServiceName "$InstallDir\printer-proxy.exe"
-    & "$InstallDir\nssm.exe" set $ServiceName AppDirectory "$InstallDir"
-    & "$InstallDir\nssm.exe" set $ServiceName AppEnvironmentExtra "+API_KEY=$apiKey" "+PORT=9191"
-    & "$InstallDir\nssm.exe" set $ServiceName DisplayName "Printer Proxy"
-    & "$InstallDir\nssm.exe" set $ServiceName Description "Local ZPL print relay for Kube"
-    & "$InstallDir\nssm.exe" set $ServiceName Start SERVICE_AUTO_START
-    & "$InstallDir\nssm.exe" set $ServiceName AppStdout "$InstallDir\proxy.log"
-    & "$InstallDir\nssm.exe" set $ServiceName AppStderr "$InstallDir\proxy.log"
-    & "$InstallDir\nssm.exe" start $ServiceName
-
-    # Install cloudflared service
-    & "$InstallDir\nssm.exe" install $CfServiceName "$InstallDir\cloudflared.exe" "tunnel run --token $tunnelToken"
-    & "$InstallDir\nssm.exe" set $CfServiceName DisplayName "Cloudflared Tunnel"
-    & "$InstallDir\nssm.exe" set $CfServiceName Description "Cloudflare tunnel for Printer Proxy"
-    & "$InstallDir\nssm.exe" set $CfServiceName Start SERVICE_AUTO_START
-    & "$InstallDir\nssm.exe" set $CfServiceName AppStdout "$InstallDir\cloudflared.log"
-    & "$InstallDir\nssm.exe" set $CfServiceName AppStderr "$InstallDir\cloudflared.log"
-    & "$InstallDir\nssm.exe" start $CfServiceName
-
-    # Health check
-    Write-Host ""
-    Write-Host "--- Step 6/6: Verify ---" -ForegroundColor Green
-    Write-Host "Waiting for services to start..." -ForegroundColor Yellow
-    Start-Sleep -Seconds 3
-    try {
-        $health = Invoke-RestMethod "http://localhost:9191/health" -TimeoutSec 5
-        Write-Host "Health check passed: $($health.status)" -ForegroundColor Green
-    } catch {
-        Write-Host "Health check failed - the service may still be starting. Check $InstallDir\proxy.log" -ForegroundColor Yellow
-    }
-
-    Write-Host ""
-    Write-Host "====================================" -ForegroundColor Cyan
-    Write-Host "  Installation Complete!" -ForegroundColor Cyan
-    Write-Host "====================================" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  Install directory : $InstallDir" -ForegroundColor White
-    Write-Host "  Proxy service     : $ServiceName" -ForegroundColor White
-    Write-Host "  Tunnel service    : $CfServiceName" -ForegroundColor White
-    Write-Host "  Logs              : $InstallDir\proxy.log / cloudflared.log" -ForegroundColor White
-
-    if ($proxyUrl) {
-        Write-Host ""
-        Write-Host "====================================" -ForegroundColor Cyan
-        Write-Host "  Enter these in Portal > Print Proxy" -ForegroundColor Cyan
-        Write-Host "====================================" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  Proxy URL : $proxyUrl" -ForegroundColor White
-        Write-Host "  API Key   : $apiKey" -ForegroundColor White
-        Write-Host ""
-
-        # Save credentials to install dir (same as macOS)
-        $credContent = "Printer Proxy Credentials`r`n" +
-            "========================`r`n" +
-            "Proxy URL : $proxyUrl`r`n" +
-            "API Key   : $apiKey`r`n" +
-            "`r`nEnter these values in Portal > Print Proxy settings."
-        $credFile = "$InstallDir\credentials.txt"
-        Set-Content -Path $credFile -Value $credContent -Encoding UTF8
-        Write-Host "  Credentials saved to: $credFile" -ForegroundColor Yellow
-
-        # Also save a copy to Desktop for easy access
-        $desktopCred = [Environment]::GetFolderPath("Desktop") + "\printer-proxy-credentials.txt"
-        Set-Content -Path $desktopCred -Value $credContent -Encoding UTF8
-        Write-Host "  Credentials also saved to: $desktopCred" -ForegroundColor Yellow
-    }
+    Reinstall-WithCredentials $apiKey $tunnelToken
+    Show-InstallSummary $apiKey $proxyUrl
 }
 
 # --------------- Update ---------------
@@ -435,6 +513,31 @@ function Do-Update {
     Write-Host "Update complete! Service restarted." -ForegroundColor Green
 }
 
+# --------------- Doctor ---------------
+function Do-Doctor {
+    Write-Host ""
+    Write-Host "--- Step 1/6: Recover existing credentials ---" -ForegroundColor Green
+
+    $apiKey = Get-ExistingApiKey
+    if ([string]::IsNullOrWhiteSpace($apiKey)) {
+        Write-Host "Could not recover API key from $InstallDir\.env or the $ServiceName service. Aborting." -ForegroundColor Red
+        return
+    }
+
+    $tunnelToken = Get-ExistingTunnelToken
+    if ([string]::IsNullOrWhiteSpace($tunnelToken)) {
+        Write-Host "Could not recover the tunnel token from the $CfServiceName service. Aborting." -ForegroundColor Red
+        return
+    }
+
+    Write-Host "  Recovered API key and tunnel token from the current installation." -ForegroundColor Green
+
+    Reinstall-WithCredentials $apiKey $tunnelToken
+
+    Write-Host ""
+    Write-Host "Doctor completed. Existing credentials were reused." -ForegroundColor Green
+}
+
 # --------------- Uninstall ---------------
 function Do-Uninstall {
     Write-Host ""
@@ -461,14 +564,16 @@ try {
 
     Write-Host "  1) Install (fresh)"
     Write-Host "  2) Update (download latest binary)"
-    Write-Host "  3) Uninstall (remove everything)"
+    Write-Host "  3) Doctor (reinstall using existing credentials)"
+    Write-Host "  4) Uninstall (remove everything)"
     Write-Host ""
-    $choice = Read-Host "Choose an option (1/2/3)"
+    $choice = Read-Host "Choose an option (1/2/3/4)"
 
     switch ($choice) {
         "1" { Do-Install }
         "2" { Do-Update }
-        "3" { Do-Uninstall }
+        "3" { Do-Doctor }
+        "4" { Do-Uninstall }
         default { Write-Host "Invalid choice." -ForegroundColor Red }
     }
 } catch {
