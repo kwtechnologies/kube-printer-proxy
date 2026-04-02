@@ -38,6 +38,35 @@ function execOutput(cmd: string): string {
   }).trim();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getServiceState(name: string): string | null {
+  try {
+    const out = execOutput(`sc query "${name}"`);
+    const match = out.match(/STATE\s+:\s+\d+\s+([A-Z_]+)/);
+    return match?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function waitForServiceStopped(
+  name: string,
+  timeoutMs = 15000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const state = getServiceState(name);
+    if (!state || state === "STOPPED") return;
+    await sleep(500);
+  }
+
+  throw new Error(`Timed out waiting for ${name} to stop.`);
+}
+
 function findFileRecursive(
   dir: string,
   name: string,
@@ -177,6 +206,24 @@ function stopAndRemoveService(name: string): void {
   } catch {}
 }
 
+async function stopServiceForReplacement(
+  name: string,
+  remove = false,
+): Promise<void> {
+  if (!getServiceState(name)) return;
+
+  try {
+    exec(`"${nssm()}" stop "${name}"`);
+  } catch {}
+  await waitForServiceStopped(name);
+
+  if (remove) {
+    try {
+      exec(`"${nssm()}" remove "${name}" confirm`);
+    } catch {}
+  }
+}
+
 export async function installServices(
   apiKey: string,
   tunnelToken: string,
@@ -186,8 +233,8 @@ export async function installServices(
   mkdirSync(INSTALL_DIR, { recursive: true });
 
   onStatus("Stopping existing Windows services...");
-  stopAndRemoveService(SERVICE_NAME);
-  stopAndRemoveService(CF_SERVICE_NAME);
+  await stopServiceForReplacement(SERVICE_NAME, true);
+  await stopServiceForReplacement(CF_SERVICE_NAME, true);
 
   await downloadProxyBinary(onStatus);
   await ensureNssm(onStatus);
@@ -269,10 +316,8 @@ export async function updateProxy(
     );
   }
 
-  try {
-    exec(`"${nssm()}" stop ${SERVICE_NAME}`);
-  } catch {}
-  await new Promise((r) => setTimeout(r, 2000));
+  onStatus("Stopping PrinterProxy...");
+  await stopServiceForReplacement(SERVICE_NAME);
 
   await downloadProxyBinary(onStatus);
 

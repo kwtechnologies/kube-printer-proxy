@@ -77,6 +77,39 @@ function Stop-And-Remove-Service($name) {
     }
 }
 
+function Wait-ForServiceStopped($name, $timeoutSeconds = 15) {
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if (-not $svc -or $svc.Status -eq "Stopped") {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "Timed out waiting for $name to stop."
+}
+
+function Stop-Service-ForReplacement($name, [switch]$Remove) {
+    $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        return
+    }
+
+    if (Test-Path "$InstallDir\nssm.exe") {
+        try {
+            & "$InstallDir\nssm.exe" stop $name 2>$null
+        } catch {}
+    }
+    Wait-ForServiceStopped $name
+
+    if ($Remove -and (Test-Path "$InstallDir\nssm.exe")) {
+        try {
+            & "$InstallDir\nssm.exe" remove $name confirm 2>$null
+        } catch {}
+    }
+}
+
 function Generate-ApiKey {
     $bytes = New-Object byte[] 16
     [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -267,8 +300,8 @@ function Reinstall-WithCredentials($apiKey, $tunnelToken) {
 
     Write-Host ""
     Write-Host "Stopping existing Windows services..." -ForegroundColor Yellow
-    Stop-And-Remove-Service $ServiceName
-    Stop-And-Remove-Service $CfServiceName
+    Stop-Service-ForReplacement $ServiceName -Remove
+    Stop-Service-ForReplacement $CfServiceName -Remove
 
     Install-Binaries
     Write-ProxyConfig $apiKey
@@ -510,8 +543,7 @@ function Do-Update {
         return
     }
 
-    & "$InstallDir\nssm.exe" stop $ServiceName 2>$null
-    Start-Sleep -Seconds 2
+    Stop-Service-ForReplacement $ServiceName
     Download-File $exeAsset.browser_download_url "$InstallDir\printer-proxy.exe"
     & "$InstallDir\nssm.exe" start $ServiceName
 
