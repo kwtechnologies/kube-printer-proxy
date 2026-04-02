@@ -185,6 +185,10 @@ export async function installServices(
   onStatus("Creating install directory...");
   mkdirSync(INSTALL_DIR, { recursive: true });
 
+  onStatus("Stopping existing Windows services...");
+  stopAndRemoveService(SERVICE_NAME);
+  stopAndRemoveService(CF_SERVICE_NAME);
+
   await downloadProxyBinary(onStatus);
   await ensureNssm(onStatus);
   await downloadCloudflared(onStatus);
@@ -196,9 +200,6 @@ export async function installServices(
   );
 
   onStatus("Installing Windows services...");
-  stopAndRemoveService(SERVICE_NAME);
-  stopAndRemoveService(CF_SERVICE_NAME);
-
   const proxyExe = join(INSTALL_DIR, "printer-proxy.exe");
   exec(`"${nssm()}" install ${SERVICE_NAME} "${proxyExe}"`);
   exec(`"${nssm()}" set ${SERVICE_NAME} AppDirectory "${INSTALL_DIR}"`);

@@ -264,6 +264,12 @@ function Reinstall-WithCredentials($apiKey, $tunnelToken) {
     Write-Host ""
     Write-Host "--- Step 2/6: Create install directory ---" -ForegroundColor Green
     Ensure-InstallDir
+
+    Write-Host ""
+    Write-Host "Stopping existing Windows services..." -ForegroundColor Yellow
+    Stop-And-Remove-Service $ServiceName
+    Stop-And-Remove-Service $CfServiceName
+
     Install-Binaries
     Write-ProxyConfig $apiKey
     Install-WindowsServices $apiKey $tunnelToken
