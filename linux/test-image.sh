@@ -48,6 +48,9 @@ if [ "${1:-}" = --check-in-container ]; then
   [ ! -e "$m/root/.not_logged_in_yet" ] || fail "/root/.not_logged_in_yet still there"
   ! grep -rqs -- --autologin "$m/etc/systemd/system" || fail "root autologin override still there"
   pass wizard-skipped
+  is /etc/shadow root:shadow 640
+  grep -q '^root:!' "$m/etc/shadow" || fail "root password not locked"
+  pass root-locked
   exit 0
 fi
 
@@ -77,15 +80,19 @@ cleanup() {
 trap cleanup EXIT
 
 echo "== build an image from a dummy env (dummy values only)"
+# No release has the bundle in these tests; the release check is tested below.
+export ALLOW_NO_RELEASE=1
+# A throwaway key: build-image.sh checks it with ssh-keygen.
+ssh-keygen -q -t ed25519 -N '' -C test@example -f "$t/key"
 # Quote and space in the Wi-Fi values exercise the netplan YAML quoting.
-cat >"$t/test.env" <<'EOF'
+cat >"$t/test.env" <<EOF
 TUNNEL_TOKEN=dummy-tunnel-token
 API_KEY=dummy-api-key
 WIFI_SSID=Kube's Wi-Fi
 WIFI_PASSWORD=dummy pass'word#1
 WIFI_COUNTRY=HK
 CHANNEL=stable
-SSH_AUTHORIZED_KEYS=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDummyDummyDummyDummyDummyDummyDummyDummy test@example
+SSH_AUTHORIZED_KEYS=$(cat "$t/key.pub")
 DEVICE_HOSTNAME=printer-proxy-test
 EOF
 OUT=$t/test.img "$here/build-image.sh" "$t/test.env" ${IMAGE:+"$IMAGE"}
@@ -104,8 +111,32 @@ rejects() {
   rejects bad-channel '/^CHANNEL=/ { $0 = "CHANNEL=beta" } 1'
   rejects duplicate '1; END { print "API_KEY=dummy2" }'
   rejects no-final-newline '{ printf "%s%s", sep, $0; sep = "\n" }'
+  rejects mangled-key '/^SSH_AUTHORIZED_KEYS=/ { $0 = substr($0, 1, 60) } 1'
+  rejects short-wifi-password '/^WIFI_PASSWORD=/ { $0 = "WIFI_PASSWORD=short" } 1'
+  rejects ssid-without-password '/^WIFI_PASSWORD=/ { $0 = "WIFI_PASSWORD=" } 1'
+  rejects long-ssid '/^WIFI_SSID=/ { $0 = "WIFI_SSID=123456789012345678901234567890123" } 1'
+  rejects bad-country '/^WIFI_COUNTRY=/ { $0 = "WIFI_COUNTRY=hk" } 1'
 }
 pass env-validation
+
+echo "== refuses when the channel's release has no bundle"
+# builds <name> <release JSON>: exit status of build-image.sh up to the image step
+builds() {
+  mkdir -p "$t/api/releases"
+  printf '%s\n' "$2" >"$t/api/releases/latest"
+  ALLOW_NO_RELEASE='' REPO_API=file://$t/api "$here/build-image.sh" "$t/test.env" /nonexistent >"$t/out" 2>&1 || true
+  grep -q "$1" "$t/out" || { sed 's/^/    | /' "$t/out"; fail "release-check: want '$1'"; }
+}
+builds 'has no printer-proxy-linux-arm64.tar.gz' '{"tag_name":"v0.2.4","assets":[{"name":"printer-proxy.exe"}]}'
+builds 'no such image' '{"tag_name":"v0.3.0","assets":[{"name":"printer-proxy-linux-arm64.tar.gz"}]}'
+pass release-check
+
+echo "== refuses a wrong image"
+if EXPECTED_CODENAME=trixie OUT=$t/wrong.img "$here/build-image.sh" "$t/test.env" ${IMAGE:+"$IMAGE"} >"$t/out" 2>&1 ||
+  ! grep -q 'not Debian trixie' "$t/out" || compgen -G "$t/wrong.img*" >/dev/null; then
+  sed 's/^/    | /' "$t/out"; fail wrong-image
+fi
+pass wrong-image
 
 echo "== check the image"
 check "$t/test.img" "$t/test.env"
@@ -168,7 +199,7 @@ x systemctl show -P NextElapseUSecRealtime printer-proxy-update.timer | grep -q 
 pass hostname-timezone
 
 [ "$(x stat -c '%U %a' /home/kube/.ssh/authorized_keys)" = "kube 600" ] || fail authorized-keys-mode
-x cat /home/kube/.ssh/authorized_keys | grep -q '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDummy' || fail authorized-keys
+[ "$(x cat /home/kube/.ssh/authorized_keys)" = "$(cat "$t/key.pub")" ] || fail authorized-keys
 x sudo -l -U kube | grep -q 'NOPASSWD: ALL' || fail sudo
 [ "$(x passwd -S root | cut -d' ' -f2)" = L ] && [ "$(x passwd -S kube | cut -d' ' -f2)" = L ] || fail passwords-locked
 sshd=$(x sshd -T)
@@ -179,6 +210,7 @@ pass user-ssh
 
 [ "$(x stat -c '%a' /etc/netplan/20-printer-proxy.yaml)" = 600 ] || fail netplan-mode
 x grep -q 'RouteMetric=100' /run/systemd/network/10-netplan-all-eth-interfaces.network || fail eth-metric
+x grep -q 'RequiredForOnline=no' /run/systemd/network/10-netplan-all-eth-interfaces.network || fail eth-optional
 x grep -q 'RouteMetric=600' /run/systemd/network/10-netplan-wlan0.network || fail wifi-metric
 x grep -q "ssid=\"Kube's Wi-Fi\"" /run/netplan/wpa-wlan0.conf || fail wifi-ssid
 x grep -q 'country=HK' /run/netplan/wpa-wlan0.conf || fail wifi-country
@@ -203,6 +235,17 @@ pass apt-cloudflared-unattended
 x curl -fsS http://127.0.0.1:9191/health | grep -q "\"$tag\"" || fail health
 x systemctl is-enabled printer-proxy-update.timer >/dev/null || fail update-timer
 pass bundle-installed
+
+echo "== Wi-Fi values netplan rejects: first boot goes on Ethernet-only"
+x sed -i 's/^WIFI_PASSWORD=.*/WIFI_PASSWORD=short/' /etc/printer-proxy/env
+rc=0
+rerun=$(x env SKIP_NETPLAN_APPLY=1 REPO_API=http://127.0.0.1:8000/api DOWNLOAD_BASE=http://127.0.0.1:8000/dl \
+  /usr/local/lib/printer-proxy/firstboot.sh 2>&1) || rc=$?
+if [ $rc = 0 ] && [[ $rerun == *"continuing Ethernet-only"* ]] && ! x grep -q wifis /etc/netplan/20-printer-proxy.yaml &&
+  x test ! -e /run/systemd/network/10-netplan-wlan0.network; then pass wifi-fallback; else
+  printf '%s\n' "$rerun" | tail -n 20 | sed 's/^/    | /'
+  fail wifi-fallback
+fi
 
 docker restart "$ctr" >/dev/null
 wait_for 60 "first boot skipped after reboot" \

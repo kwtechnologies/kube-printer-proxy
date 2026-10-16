@@ -49,14 +49,15 @@ mv /etc/sudoers.d/90-kube.tmp /etc/sudoers.d/90-kube
 passwd -l root >/dev/null
 # The sshd drop-in (key-only, no root) is baked into the image; reload in case
 # sshd started before this unit.
-systemctl try-reload-or-restart ssh.service
+systemctl try-reload-or-restart ssh.service || log "ssh reload failed, continuing"
 
 log "network"
 # Merges with Armbian's 10-dhcp-all-interfaces.yaml (same ethernet id) and
 # adds route metrics: Ethernet wins whenever it has a lease, Wi-Fi is fallback.
-ssid=$(get WIFI_SSID)
-country=$(get WIFI_COUNTRY)
-{
+# Both optional, so wait-online doesn't stall on whichever link is absent.
+netcfg() { # [wifi]
+  local ssid
+  ssid=$(get WIFI_SSID)
   echo "network:"
   echo "  version: 2"
   echo "  renderer: networkd"
@@ -64,15 +65,16 @@ country=$(get WIFI_COUNTRY)
   echo "    all-eth-interfaces:"
   echo "      match:"
   echo "        name: \"e*\""
+  echo "      optional: true"
   echo "      dhcp4: true"
   echo "      dhcp6: true"
   echo "      dhcp4-overrides: {route-metric: 100}"
   echo "      dhcp6-overrides: {route-metric: 100}"
-  if [ -n "$ssid" ]; then
+  if [ "${1:-}" = wifi ] && [ -n "$ssid" ]; then
     echo "  wifis:"
     echo "    wlan0:"
     echo "      optional: true"
-    echo "      regulatory-domain: $(yq "${country:-HK}")"
+    echo "      regulatory-domain: $(yq "$(get WIFI_COUNTRY | grep . || echo HK)")"
     echo "      dhcp4: true"
     echo "      dhcp6: true"
     echo "      dhcp4-overrides: {route-metric: 600}"
@@ -81,11 +83,23 @@ country=$(get WIFI_COUNTRY)
     echo "        $(yq "$ssid"):"
     echo "          password: $(yq "$(get WIFI_PASSWORD)")"
   fi
-} >/etc/netplan/20-printer-proxy.yaml.tmp
-chmod 600 /etc/netplan/20-printer-proxy.yaml.tmp
-mv /etc/netplan/20-printer-proxy.yaml.tmp /etc/netplan/20-printer-proxy.yaml
-netplan generate
-if [ "${SKIP_NETPLAN_APPLY:-}" != 1 ]; then netplan apply; fi
+}
+net=/etc/netplan/20-printer-proxy.yaml
+applied=/var/lib/printer-proxy/netplan.applied # last config netplan apply took
+put() { netcfg "$@" >"$net.tmp" && chmod 600 "$net.tmp" && mv "$net.tmp" "$net"; }
+put wifi
+if ! netplan generate; then
+  # build-image.sh validates Wi-Fi values; never let them block the install.
+  echo "<4>firstboot: netplan rejected the Wi-Fi config, continuing Ethernet-only" >&2
+  put
+  netplan generate
+fi
+# Apply only on change: each retry would otherwise bounce the links.
+if ! cmp -s "$net" "$applied" && [ "${SKIP_NETPLAN_APPLY:-}" != 1 ]; then
+  netplan apply
+  mkdir -p "${applied%/*}"
+  cp -p "$net" "$applied"
+fi
 
 log "waiting for internet"
 # Also waits out the clock: there is no RTC, so TLS fails until NTP syncs.
@@ -101,9 +115,13 @@ mv /usr/share/keyrings/cloudflare-main.gpg.tmp /usr/share/keyrings/cloudflare-ma
 echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
   >/etc/apt/sources.list.d/cloudflared.list
 export DEBIAN_FRONTEND=noninteractive
-dpkg --configure -a # finish a dpkg run cut off by power loss on an earlier attempt
-apt-get update
-apt-get install -y cloudflared unattended-upgrades
+# Finish a dpkg run cut off by power loss on an earlier attempt. dpkg has no
+# lock wait, and armbian-firstrun may be running dpkg-reconfigure meanwhile.
+for _ in $(seq 60); do dpkg --configure -a && break; sleep 5; done
+# A dead source (Armbian dropped bookworm builds for this board) makes update
+# exit non-zero; install still fails if the lists it needs are missing.
+apt-get -o DPkg::Lock::Timeout=300 update || log "apt-get update had errors, trying the install anyway"
+apt-get -o DPkg::Lock::Timeout=300 install -y cloudflared unattended-upgrades
 # Sorts after Armbian's 02-armbian-periodic and Debian's 50unattended-upgrades:
 # the later scalar wins, and #clear drops their origin lists (which include
 # Armbian's kernel/BSP packages and Debian point releases).
@@ -127,5 +145,8 @@ log "installing printer-proxy (channel $(get CHANNEL))"
 bash "$here/update.sh"
 
 mkdir -p "${DONE%/*}"
+# SD cards lose power often: everything above must be on disk before the
+# marker that stops reruns.
+sync
 touch "$DONE"
 log "done"
