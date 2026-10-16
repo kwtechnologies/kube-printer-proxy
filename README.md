@@ -51,6 +51,8 @@ VERSION                    the release tag
 install.sh                 the one install path
 printer-proxy.service      DynamicUser, EnvironmentFile=/etc/printer-proxy/env
 cloudflared-tunnel.service cloudflared tunnel --no-autoupdate run (TUNNEL_TOKEN from env file)
+update.sh                  the nightly self-updater (see Updates)
+printer-proxy-update.service / .timer   runs update.sh daily at 03:00
 ```
 
 On the device:
@@ -70,12 +72,35 @@ On the device:
 
 Keeping every release as a complete directory (with its own `install.sh`) means rollback is just running `install.sh` from the previous release dir: it repoints `current`, refreshes the units and restarts. `install.sh` is idempotent and must run as root from an extracted bundle. `PREFIX`, `SYSTEMD_DIR` and `SKIP_SYSTEMCTL=1` override paths for testing. `cloudflared` itself is installed from Cloudflare's apt repo, not the bundle.
 
+## Updates
+
+`printer-proxy-update.timer` runs `printer-proxy-update.service` (`/opt/printer-proxy/current/update.sh`) daily at 03:00 device time (Asia/Hong_Kong); `Persistent=true` catches up at boot if the device was off. Both units ship in the bundle and `install.sh` installs them, so a release can change the updater or its schedule.
+
+Each run:
+
+1. Reads `CHANNEL` from `/etc/printer-proxy/env` (default `stable`). `stable` takes GitHub `releases/latest`; `pre` takes the newest release, pre-releases included.
+2. If that tag equals `/opt/printer-proxy/current/VERSION`, exits 0. With nothing installed yet, it installs the tag.
+3. Downloads `printer-proxy-linux-arm64.tar.gz` and `.sha256`. On a mismatch it aborts with nothing changed.
+4. Runs the new bundle's `install.sh`, then polls `http://127.0.0.1:9191/health` for 15s until `version` is the new tag.
+5. Success: keeps the current and previous release dirs, prunes older ones. Failure: runs the previous release's `install.sh`, logs `UPDATE FAILED` at error priority and exits non-zero (the unit shows as failed). The bad tag is retried the next night until a newer release replaces it.
+
+Watch or trigger it:
+
+```bash
+journalctl -u printer-proxy-update            # past runs
+systemctl list-timers printer-proxy-update.timer
+sudo systemctl start printer-proxy-update     # run now (blocks until done)
+```
+
+A bundle that stops shipping a `.service` unit gets it disabled and removed but not stopped (it stops at the next boot): stopping it could kill the updater that is running `install.sh`. Dropped timers are stopped.
+
 ## Development
 
 ```bash
 go vet ./... && go test ./...
 shellcheck linux/*.sh
 linux/package.sh v0.0.0-dev dist   # builds the same bundle CI does
+linux/test-update.sh               # updater fixture test, in a debian:bookworm container (needs Docker)
 ```
 
 ## Cutting a release
