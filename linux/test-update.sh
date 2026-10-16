@@ -138,4 +138,25 @@ if [ $rc != 0 ] && [[ $out == *"interrupted while installing v8-rc1"* ]] && [ "$
   health | grep -q "\"v6-rc1\"" && [ ! -e "$PREFIX/rollback-to" ] && [ ! -e "$PREFIX/releases/v8-rc1" ] &&
   ! compgen -G "$PREFIX/.update.*" >/dev/null; then pass interrupted-rollback; else fail interrupted-rollback; fi
 
+echo "== stale marker: never downgrades a healthy current"
+releases v2 v6-rc1 # v6-rc1 is current and healthy; v5-rc1 is the kept previous release
+echo "v5-rc1 v9-rc1" >"$PREFIX/rollback-to" # failed tag is not current
+update
+if [ $rc = 0 ] && [[ $out == *"ignoring stale"* ]] && [ "$(installed)" = v6-rc1 ] && [ ! -e "$PREFIX/rollback-to" ]; then pass marker-not-current; else fail marker-not-current; fi
+echo "v5-rc1 v6-rc1" >"$PREFIX/rollback-to" # killed after /health confirmed, before the marker went
+update
+if [ $rc = 0 ] && [[ $out == *"v6-rc1 is healthy, keeping it"* ]] && [ "$(installed)" = v6-rc1 ] &&
+  [ -d "$PREFIX/releases/v6-rc1" ] && [ ! -e "$PREFIX/rollback-to" ]; then pass marker-current-healthy; else fail marker-current-healthy; fi
+
+echo "== unhealthy previous release: rollback dies, a newer fixed tag still lands next run"
+bundle v10-rc1 broken; bundle v11-rc1 broken; bundle v12-rc1
+bash "$t/build/v10-rc1/install.sh" >/dev/null # prev that has since gone unhealthy
+releases v2 v11-rc1
+update
+if [ $rc != 0 ] && [[ $out == *"ROLLBACK UNHEALTHY: v10-rc1"* ]] && [ "$(installed)" = v10-rc1 ] &&
+  [ ! -e "$PREFIX/rollback-to" ]; then pass rollback-unhealthy; else fail rollback-unhealthy; fi
+releases v2 v12-rc1
+update
+if [ $rc = 0 ] && [ "$(installed)" = v12-rc1 ] && health | grep -q "\"v12-rc1\""; then pass fix-forward; else fail fix-forward; fi
+
 echo "all update tests passed"

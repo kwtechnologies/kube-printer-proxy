@@ -78,7 +78,7 @@ Keeping every release as a complete directory (with its own `install.sh`) means 
 
 Each run:
 
-0. If the previous run was killed (power loss, timeout) between installing and the health verdict, `/opt/printer-proxy/rollback-to` is still there: it rolls back to the release named in it and exits non-zero, before anything else.
+0. If the previous run was killed (power loss, timeout) between installing and the health verdict, `/opt/printer-proxy/rollback-to` is still there. If the half-installed tag is still current and does not come up healthy, it rolls back to the previous release and exits non-zero, before anything else. A marker that no longer matches `current`, or whose tag is healthy after all, is dropped. Once the rollback's `install.sh` succeeds the marker is gone even if the previous release is unhealthy too, so a newer release can still install the next night.
 1. Reads `CHANNEL` from `/etc/printer-proxy/env` (default `stable`, also when the file is missing). `stable` takes GitHub `releases/latest`; `pre` takes the newest release, pre-releases included. Switching a device from `pre` back to `stable` is intended to downgrade it to the latest stable on the next run, since the updater installs whatever the channel names, not only newer tags.
 2. If that tag equals `/opt/printer-proxy/current/VERSION`, exits 0. With nothing installed yet, it installs the tag.
 3. Downloads `printer-proxy-linux-arm64.tar.gz` and `.sha256` into `/opt/printer-proxy/.update.*` (not `/tmp`). On a mismatch it aborts with nothing changed.

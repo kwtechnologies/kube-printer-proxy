@@ -47,12 +47,13 @@ wait_health() {
 }
 
 # rollback <to> <failed>: reinstall <to>, delete <failed>, exit 1. The marker
-# stays until the rollback is healthy, so the next run retries it.
+# stays until <to>'s install.sh succeeds, so the next run retries it. After
+# that it goes even if <to> is unhealthy, so a newer tag can still land.
 rollback() {
   echo "<3>update.sh: UPDATE FAILED: $2 did not come up healthy, rolling back to $1" >&2
   bash "$PREFIX/releases/$1/install.sh" || die "ROLLBACK FAILED: $1 install.sh exited non-zero"
-  wait_health "$1" || die "ROLLBACK UNHEALTHY: $1 does not report itself on $HEALTH_URL"
   rm -rf "$marker" "$PREFIX/releases/$2" "$PREFIX/releases/$2.tmp"
+  wait_health "$1" || die "ROLLBACK UNHEALTHY: $1 does not report itself on $HEALTH_URL"
   die "rolled back to $1 after failed update to $2"
 }
 
@@ -61,12 +62,17 @@ main() {
   rm -rf "$PREFIX"/.update.* # work dirs left by a killed run
   if [ -f "$marker" ]; then
     read -r prev failed <"$marker" || true
+    [ -f "$PREFIX/current/VERSION" ] && cur=$(tr -d '[:space:]' <"$PREFIX/current/VERSION")
+    # Only act while the failed tag is still current; anything else is stale.
     if valid_tag "${prev:-}" && valid_tag "${failed:-}" && [ "$prev" != "$failed" ] &&
-      [ -f "$PREFIX/releases/$prev/install.sh" ]; then
+      [ "$cur" = "$failed" ] && [ -f "$PREFIX/releases/$prev/install.sh" ]; then
       log "previous run was interrupted while installing $failed"
-      rollback "$prev" "$failed"
+      # Killed after /health confirmed but before the marker went: keep it.
+      wait_health "$failed" || rollback "$prev" "$failed"
+      log "$failed is healthy, keeping it"
+    else
+      echo "<4>update.sh: WARNING: ignoring stale or unusable $marker ($(cat "$marker")), current is '${cur:-none}'" >&2
     fi
-    echo "<4>update.sh: WARNING: ignoring unusable $marker ($(cat "$marker"))" >&2
     rm -f "$marker"
   fi
 
