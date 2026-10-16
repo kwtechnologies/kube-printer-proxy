@@ -1,6 +1,8 @@
 printer-proxy
-printer-proxy.exe
 *.log
 .env
+*.env
+!.env.example
+!site.env.example
 dist/
-**/node_modules
+.DS_Store

@@ -1,0 +1,19 @@
+[Unit]
+Description=Cloudflare tunnel for printer-proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# TUNNEL_TOKEN comes from the EnvironmentFile, never the command line.
+EnvironmentFile=/etc/printer-proxy/env
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate run
+Restart=always
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

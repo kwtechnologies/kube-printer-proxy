@@ -1,0 +1,3 @@
+# 0002. Pull-based auto-update, a tag is the deploy
+
+The device pulls the newest release nightly, so pushing a stable `v*` tag deploys to the client's prod proxy the next night, while `-rc` pre-releases go only to devices with `CHANNEL=pre`. The release bundle includes the updater, so the updater can fix itself. The safety net is `/health`: after an update the new version must report itself, otherwise the previous release is reinstalled. We verify sha256 only and do not sign releases, because access to the GitHub org is the gate. We pull rather than push because the device sits behind the client's NAT.

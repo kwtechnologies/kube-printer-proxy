@@ -1,6 +1,6 @@
 # Printer Proxy
 
-A minimal Go HTTP server that relays ZPL print jobs from HTTPS web apps to local network Zebra printers, solving the browser mixed-content restriction.
+A minimal Go HTTP server that relays ZPL print jobs from HTTPS web apps to local-network Zebra printers, solving the browser mixed-content restriction. Runs as a Linux appliance (Orange Pi Zero 3, linux/arm64). Design: see the issue "Linux appliance on Orange Pi Zero 3" and `docs/adr/`.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ A minimal Go HTTP server that relays ZPL print jobs from HTTPS web apps to local
 Portal / Handheld (HTTPS)
         │
         ▼
-  Cloudflare Tunnel (HTTPS → localhost)
+  Cloudflare Tunnel (cloudflared, token from /etc/printer-proxy/env)
         │
         ▼
   printer-proxy (:9191)
@@ -19,120 +19,65 @@ Portal / Handheld (HTTPS)
 
 ## API
 
-| Endpoint      | Method | Auth          | Description                |
-|---------------|--------|---------------|----------------------------|
-| `/print`      | POST   | `X-API-Key`   | Forward ZPL to a printer   |
-| `/health`     | GET    | none          | Health check               |
+| Endpoint  | Method | Auth        | Description              |
+|-----------|--------|-------------|--------------------------|
+| `/print`  | POST   | `X-API-Key` | Forward ZPL to a printer |
+| `/health` | GET    | none        | `{"status":"ok","version":"<tag>"}` |
 
 ### POST /print
 
 ```json
-{
-  "ip": "192.168.1.100",
-  "zpl": "^XA^FO50,50^A0N,40,40^FDHello^FS^XZ"
-}
+{ "ip": "10.5.20.10", "zpl": "^XA^FO50,50^A0N,40,40^FDHello^FS^XZ" }
 ```
 
-Headers: `Content-Type: application/json`, `X-API-Key: <your-key>`
+Headers: `Content-Type: application/json`, `X-API-Key: <key>`. Returns `200 {"status":"ok"}`. Target IP must be a private/LAN address (SSRF protection).
 
-Returns `200 {"status":"ok"}` on success. Target IP must be a private/LAN address (SSRF protection).
-
----
-
-## Developer Setup
-
-### 1. Build locally (optional)
-
-```bash
-cd packages/printer-proxy
-go build -o printer-proxy
-```
-
-### 2. Create a Cloudflare API token (one-time)
-
-Go to [Cloudflare Dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens) and create a token with:
-
-| Scope   | Resource          | Permission |
-|---------|-------------------|------------|
-| Account | Cloudflare Tunnel | Edit       |
-| Zone    | DNS               | Edit       |
-
-Save this token securely — it will be used by the installer to create tunnels automatically.
-
-### 3. Tag a release
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-GitHub Actions will build binaries for Windows (amd64), macOS (amd64 + arm64) and create a release with installer packages for both platforms.
-
-### 4. Configure the Portal
-
-After running the installer on a client machine (see below), it will output a **Proxy URL** and **API Key**. Enter these in the Portal under **Print Proxy** in the sidebar.
-
----
-
-## Quick Install (Recommended)
-
-The interactive installer handles everything: Cloudflare Tunnel creation, DNS setup, binary downloads, and service installation. All you need is the Cloudflare API token from step 2 above.
-
-### macOS
-
-```bash
-curl -fsSL https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/setup.sh | bash
-```
-
-### Windows (PowerShell)
-
-```powershell
-irm https://github.com/kwtechnologies/kube-printer-proxy/releases/latest/download/setup.ps1 | iex
-```
-
-The installer will guide you through:
-1. Choosing **Install**, **Update**, **Doctor**, or **Uninstall**
-2. Creating (or reusing) a Cloudflare Tunnel
-3. Configuring DNS and ingress automatically
-4. Downloading and installing all services
-5. Displaying the **Proxy URL** and **API Key** to enter in Portal
-
-On Windows, **Doctor** re-downloads the binaries and recreates both Windows services using the existing `API_KEY` and Cloudflare tunnel token recovered from the current install.
-
-### What you'll need during install
-
-- **Cloudflare API token** -- from step 2
-- **Tunnel name** -- e.g. `alvin-office` (creates `print-proxy-alvin-office.kwtech.dev`)
-
-### Installed components
-
-**macOS:**
-- Binary + config: `/usr/local/printer-proxy/`
-- Services: `com.kwtech.printer-proxy`, `com.kwtech.cloudflared-tunnel` (launchd)
-- Logs: `/usr/local/printer-proxy/proxy.log` and `cloudflared.log`
-
-**Windows:**
-- Binary + config: `C:\printer-proxy\`
-- Services: `PrinterProxy`, `CloudflaredTunnel` (Windows Services via NSSM)
-- Logs: `C:\printer-proxy\proxy.log` and `cloudflared.log`
-
----
-
-## Legacy Install Scripts
-
-The original bash/PowerShell installer scripts are still available as a backup:
-
-**macOS:** `curl -fsSL .../install.sh | bash`
-**Windows:** `irm .../install.ps1 | iex`
-
-These support CLI arguments for non-interactive use (`--tunnel-name`, `--cf-token`, `--api-key`).
-See previous versions of this README for full documentation.
-
----
-
-## Environment Variables
+## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_KEY` | *(required)* | Shared secret for `X-API-Key` header |
+| `API_KEY` | *(required)* | Shared secret for the `X-API-Key` header |
 | `PORT` | `9191` | Listen port |
+
+On the device these come from `/etc/printer-proxy/env` (see `linux/site.env.example`).
+
+## Bundle layout
+
+A release is one asset, `printer-proxy-linux-arm64.tar.gz` (plus `.sha256`), extracting flat to:
+
+```
+printer-proxy              binary (version baked in with -ldflags)
+VERSION                    the release tag
+install.sh                 the one install path
+printer-proxy.service      DynamicUser, EnvironmentFile=/etc/printer-proxy/env
+cloudflared-tunnel.service cloudflared tunnel --no-autoupdate run (TUNNEL_TOKEN from env file)
+```
+
+On the device:
+
+```
+/opt/printer-proxy/releases/<tag>/   full copy of each installed bundle
+/opt/printer-proxy/current           symlink to the active release
+/etc/systemd/system/*.service        copied from the active bundle
+/etc/printer-proxy/env               site config; provisioned at image build, never by the bundle
+```
+
+Keeping every release as a complete directory (with its own `install.sh`) means rollback is just running `install.sh` from the previous release dir: it repoints `current`, refreshes the units and restarts. `install.sh` is idempotent and must run as root from an extracted bundle. `PREFIX`, `SYSTEMD_DIR` and `SKIP_SYSTEMCTL=1` override paths for testing. `cloudflared` itself is installed from Cloudflare's apt repo, not the bundle.
+
+## Development
+
+```bash
+go vet ./... && go test ./...
+shellcheck linux/*.sh
+linux/package.sh v0.0.0-dev dist   # builds the same bundle CI does
+```
+
+## Cutting a release
+
+1. Tag a release candidate: `git tag v0.3.0-rc1 && git push origin v0.3.0-rc1`. CI publishes it as a **pre-release**, picked up only by `CHANNEL=pre` devices (the test Pi).
+2. Soak on the test Pi. If needed, iterate `-rc2`, ...
+3. Tag stable: `git tag v0.3.0 && git push origin v0.3.0`. Prod devices (`CHANNEL=stable`) pick it up on the next nightly update.
+
+## Provisioning a device
+
+_TODO (ticket #4): operator runbook._
