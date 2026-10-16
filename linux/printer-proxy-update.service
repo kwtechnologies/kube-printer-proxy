@@ -1,0 +1,8 @@
+[Unit]
+Description=printer-proxy self-update (see update.sh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/printer-proxy/current/update.sh

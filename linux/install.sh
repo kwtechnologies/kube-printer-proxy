@@ -52,7 +52,15 @@ if [ -f "$PREFIX/units.list" ]; then
   while read -r old; do
     [ -n "$old" ] || continue
     case " ${units[*]} " in *" $old "*) continue ;; esac
-    if have_systemctl; then systemctl disable --now "$old" || true; fi
+    # Services are disabled but not stopped: the updater runs this script from
+    # inside printer-proxy-update.service, and stopping a dropped updater would
+    # kill it mid-install. A dropped service keeps running until next boot.
+    if have_systemctl; then
+      case $old in
+        *.service) systemctl disable "$old" || true ;;
+        *) systemctl disable --now "$old" || true ;;
+      esac
+    fi
     rm -f "$SYSTEMD_DIR/$old"
   done <"$PREFIX/units.list"
 fi
