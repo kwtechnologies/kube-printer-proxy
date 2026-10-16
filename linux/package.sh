@@ -22,7 +22,9 @@ for f in "$root"/linux/*.service "$root"/linux/*.timer "$root"/linux/*.sh; do
   cp "$f" "$stage/"
 done
 echo "$tag" >"$stage/VERSION"
+chmod 755 "$stage"
 
-if tar --version | grep -q GNU; then own=(--owner=0 --group=0); else own=(--uid 0 --gid 0); fi
+if tar --version | grep -q GNU; then own=(--owner=0 --group=0); else own=(--uid 0 --gid 0 --no-xattrs); fi
+export COPYFILE_DISABLE=1
 tar -C "$stage" -czf "$out/printer-proxy-linux-arm64.tar.gz" "${own[@]}" .
 (cd "$out" && { sha256sum printer-proxy-linux-arm64.tar.gz 2>/dev/null || shasum -a 256 printer-proxy-linux-arm64.tar.gz; } >printer-proxy-linux-arm64.tar.gz.sha256)

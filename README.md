@@ -62,6 +62,12 @@ On the device:
 /etc/printer-proxy/env               site config; provisioned at image build, never by the bundle
 ```
 
+**Installed version contract:** `cat /opt/printer-proxy/current/VERSION` (works when the service is down, unlike `/health`). `install.sh` also records the units it installed in `/opt/printer-proxy/units.list`, and disables/removes units a later (or rolled-back-to) bundle no longer ships.
+
+**Ship rule:** every `linux/*.sh`, `*.service` and `*.timer` goes into the bundle, except `build-image.sh`, `package.sh` and `test-*`. Anything else in `linux/` (e.g. `site.env.example`) stays in the repo.
+
+**Shared env file:** both services read the same `/etc/printer-proxy/env` (root:root 0600), so each process can see the other's secrets via its own environment; the services run as separate dynamic users.
+
 Keeping every release as a complete directory (with its own `install.sh`) means rollback is just running `install.sh` from the previous release dir: it repoints `current`, refreshes the units and restarts. `install.sh` is idempotent and must run as root from an extracted bundle. `PREFIX`, `SYSTEMD_DIR` and `SKIP_SYSTEMCTL=1` override paths for testing. `cloudflared` itself is installed from Cloudflare's apt repo, not the bundle.
 
 ## Development

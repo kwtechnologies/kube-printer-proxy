@@ -1,8 +1,1 @@
-printer-proxy
-*.log
-.env
 *.env
-!.env.example
-!site.env.example
-dist/
-.DS_Store

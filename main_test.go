@@ -8,6 +8,8 @@ import (
 )
 
 func TestHealth(t *testing.T) {
+	old := version
+	t.Cleanup(func() { version = old })
 	version = "v9.9.9"
 	rec := httptest.NewRecorder()
 	handleHealth(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
