@@ -3,3 +3,5 @@ printer-proxy
 *.log
 dist/
 .DS_Store
+*.img
+*.img.xz

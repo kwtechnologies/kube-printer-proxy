@@ -1,0 +1,18 @@
+[Unit]
+Description=printer-proxy first boot provisioning (see firstboot.sh)
+# Runs until it succeeds once; the script writes this file last.
+ConditionPathExists=!/var/lib/printer-proxy/firstboot.done
+# The root filesystem has ~100 MB free until Armbian grows it.
+After=armbian-resize-filesystem.service armbian-firstrun.service systemd-networkd.service
+# Retry forever (e.g. no internet yet): no start rate limit.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/printer-proxy/firstboot.sh
+Restart=on-failure
+RestartSec=2min
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target
