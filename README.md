@@ -66,7 +66,7 @@ On the device:
 
 **Installed version contract:** `cat /opt/printer-proxy/current/VERSION` (works when the service is down, unlike `/health`). `install.sh` also records the units it installed in `/opt/printer-proxy/units.list`, and disables/removes units a later (or rolled-back-to) bundle no longer ships.
 
-**Ship rule:** every `linux/*.sh`, `*.service` and `*.timer` goes into the bundle, except `build-image.sh`, `package.sh` and `test-*`. Anything else in `linux/` (e.g. `site.env.example`) stays in the repo.
+**Ship rule:** every `linux/*.sh`, `*.service` and `*.timer` goes into the bundle, except `build-image.sh`, `package.sh` and `test-*`. Anything else in `linux/` (e.g. `site.env.example`, and `linux/image/`, which `build-image.sh` bakes into the SD image) stays in the repo.
 
 **Shared env file:** both services read the same `/etc/printer-proxy/env` (root:root 0600), so each process can see the other's secrets via its own environment; the services run as separate dynamic users.
 
@@ -101,9 +101,10 @@ The unit has `TimeoutStartSec=15min` and is sandboxed (`ProtectSystem=strict` wi
 
 ```bash
 go vet ./... && go test ./...
-shellcheck linux/*.sh
+shellcheck linux/*.sh linux/image/*.sh
 linux/package.sh v0.0.0-dev dist   # builds the same bundle CI does
 linux/test-update.sh               # updater fixture test, in a debian:bookworm container (needs Docker)
+linux/test-image.sh                # SD image build + check + first-boot test (Docker on an arm64 Mac, internet)
 ```
 
 ## Cutting a release
@@ -114,4 +115,77 @@ linux/test-update.sh               # updater fixture test, in a debian:bookworm 
 
 ## Provisioning a device
 
-_TODO (ticket #4): operator runbook._
+One SD card per device, built on the dev Mac. The card boots straight into the print proxy: no keyboard, SSH or script on site.
+
+### What the image contains
+
+`linux/build-image.sh <env-file> [armbian-image]` takes the Armbian image (default: downloads the pinned one and checks its sha256), and in a privileged `debian:bookworm` container (the image is one ext4 partition macOS can't write) adds:
+
+```
+/etc/printer-proxy/env                               the site env file, root:root 0600
+/usr/local/lib/printer-proxy/firstboot.sh, update.sh first boot + the updater it runs
+/etc/systemd/system/printer-proxy-firstboot.service  enabled oneshot
+/etc/ssh/sshd_config.d/10-printer-proxy.conf         key-only, no root login
+```
+
+and removes Armbian's first-login wizard trigger: `/root/.not_logged_in_yet` (`/etc/profile.d/armbian-check-first-login.sh` only runs `armbian-firstlogin` while it exists) and the `getty@`/`serial-getty@` root-autologin overrides that exist to reach it. Armbian's own preset mechanism (`PRESET_*` in `.not_logged_in_yet`) is not used: it runs from that root console autologin and its network presets cannot express Ethernet-preferred with Wi-Fi fallback.
+
+Output is `./printer-proxy-<env name>.img` (override with `OUT=`). It holds the site's secrets: flash it, then delete it. `*.img` and `*.env` are gitignored.
+
+**Base image:** Armbian 25.5.1, Debian 12 bookworm, minimal, kernel 6.12 (`Armbian_25.5.1_Orangepizero3_bookworm_current_6.12.23_minimal.img.xz`). armbian.com no longer lists bookworm for the Zero 3 (it is a community board now, offering only trixie rolling builds), so it comes from the Armbian archive (`https://fi.mirror.armbian.de/archive/orangepizero3/archive/`). The sha256 pinned in `build-image.sh` is Armbian's `.sha`; the `.asc` signature verifies against Armbian's key `DF00FAF1C577104B50BF1D0093D6889F9F0E78D5`. To use another image, pass it as the second argument with `ARMBIAN_SHA256=<sha256>`.
+
+### First boot
+
+`printer-proxy-firstboot.service` runs `firstboot.sh` until it succeeds once, then `/var/lib/printer-proxy/firstboot.done` stops it running again. Every step is idempotent; a failed run (no internet, no release yet) is retried every 2 minutes and on every boot. Progress: `journalctl -u printer-proxy-firstboot`.
+
+1. Hostname (`DEVICE_HOSTNAME`, default `printer-proxy`), timezone `Asia/Hong_Kong`.
+2. User `kube` with `SSH_AUTHORIZED_KEYS`, passwordless sudo, no password; root password locked.
+3. Network: Armbian minimal uses netplan with systemd-networkd (no NetworkManager) and ships `wpasupplicant`. `/etc/netplan/20-printer-proxy.yaml` gives Ethernet (`e*`) DHCP with route metric 100 and, if `WIFI_SSID` is set, `wlan0` DHCP with metric 600: Ethernet wins whenever it has a lease.
+4. Waits (up to 10 min per attempt) until `https://pkg.cloudflare.com` answers. This also waits out the clock: the board has no RTC, so TLS fails until NTP syncs.
+5. Adds Cloudflare's apt repo, installs `cloudflared` and `unattended-upgrades`. `/etc/apt/apt.conf.d/52printer-proxy` replaces Armbian's and Debian's origin lists (Armbian's would upgrade its kernel/BSP packages) with Debian security + cloudflared only, runs daily, and restarts the tunnel after dpkg runs so a cloudflared upgrade takes effect. No dist-upgrades.
+6. Installs the bundle by running the baked `update.sh` with `CHANNEL` from the env file. **Why baked, not fetched:** `update.sh` with nothing installed already does the first install (download, sha256, `install.sh`, `/health` check), so baking it avoids duplicating release lookup in `firstboot.sh`. It runs directly, not via `printer-proxy-update.service`, whose sandbox is meant for nightly runs. From then on the nightly timer runs the bundle's own `update.sh`.
+
+### Runbook
+
+Dashboard steps are manual. Hostnames below are examples except the existing prod one.
+
+1. **Prod tunnel token.** Zero Trust → Networks → Tunnels → the existing `print-proxy-kube-office.kwtech.dev` tunnel → configure → the install command. The token is the long string after `--token`. Put it in `prod.env` (`TUNNEL_TOKEN`) in the password manager, with the existing `API_KEY`.
+2. **Test tunnel.** Create a tunnel `print-proxy-test`, add a public hostname (e.g. `print-proxy-test.kwtech.dev`) → service `http://localhost:9191`, and put its token in `test.env` with `CHANNEL=pre`. Point **staging** `PrintProxyConfig.url` at that hostname. The test Pi must never carry the prod token: Cloudflare load-balances across a tunnel's connectors.
+3. **SSH rescue.** On each tunnel add a second public hostname (e.g. `ssh-print-proxy-kube-office.kwtech.dev`) → service `ssh://localhost:22`, and a Zero Trust Access self-hosted application on that hostname allowing only kwtech staff. Then on your machine (with `cloudflared` installed):
+
+   ```
+   Host ssh-print-proxy-*.kwtech.dev
+     User kube
+     IdentityFile ~/.ssh/kwtech
+     ProxyCommand cloudflared access ssh --hostname %h
+   ```
+
+4. **Alerts.** Cloudflare dashboard → Notifications → add a Tunnel Health alert for both tunnels, emailing the team.
+5. **Build, flash, boot, verify.**
+
+   ```bash
+   # test.env / prod.env from the password manager, never committed
+   linux/build-image.sh test.env                                    # -> printer-proxy-test.img
+   linux/test-image.sh --check printer-proxy-test.img test.env      # optional: assert what was baked
+   ```
+
+   Flash the `.img` with balenaEtcher, delete the `.img`, insert the card, connect Ethernet and power. First boot takes a few minutes (filesystem resize, apt). Then run the hardware checklist below; at minimum `curl https://print-proxy-test.kwtech.dev/health` shows the release tag, and a test print from staging comes out.
+6. **Cutover by overlap.** Boot the prod-image Pi while Windows still runs: it joins the prod tunnel as a second connector. Send several prints from the portal and handhelds (with two connectors, any request may go to either box), check `journalctl -u printer-proxy` on the Pi shows them, then power Windows off and print again. **Rollback:** power Windows back on and unplug the Pi.
+7. **Releases.** See [Cutting a release](#cutting-a-release): tag `-rc`, soak on the test Pi (`CHANNEL=pre`), then tag stable for prod (`CHANNEL=stable`). The first device boot needs a release that has the Linux bundle asset; until one exists, first boot keeps retrying (`journalctl -u printer-proxy-firstboot` shows the download failing).
+
+### Hardware boot checklist (real Zero 3)
+
+Run on the test Pi with `test.env` first. SSH in through the Access hostname as `kube`.
+
+- [ ] HDMI or serial console (ttyS0, 115200) shows a plain login prompt: no Armbian wizard, no root autologin.
+- [ ] `systemctl status printer-proxy-firstboot` succeeded; `journalctl -u printer-proxy-firstboot` ends with `firstboot: done`.
+- [ ] `curl -s https://<tunnel hostname>/health` returns `{"status":"ok","version":"<tag>"}`; `cat /opt/printer-proxy/current/VERSION` matches.
+- [ ] `ssh <ssh hostname>` works as `kube`; `sudo -n true` works; `ssh root@...` and password logins are refused; `sudo passwd -S root` shows `L`.
+- [ ] `hostname` and `timedatectl` show the hostname and `Asia/Hong_Kong`; `systemctl list-timers` shows `printer-proxy-update.timer` at 03:00 and the apt timers.
+- [ ] `ip link` shows `wlan0` (the netplan file assumes that name), and `ip route` shows default via the Ethernet interface with metric 100 (and via `wlan0` with metric 600 if Wi-Fi is set).
+- [ ] Wi-Fi fallback: unplug Ethernet, `/health` through the tunnel still answers within a minute; plug it back and the default route returns to Ethernet.
+- [ ] From the Pi, `nc -zv 10.5.20.x 9100` reaches the printers; a test print from the portal comes out.
+- [ ] `df -h /` shows the whole card (Armbian resized the root filesystem).
+- [ ] `sudo unattended-upgrade --dry-run -d 2>&1 | grep 'Allowed origins'` lists only Debian-Security and cloudflared.
+- [ ] Reboot: everything comes back; first boot is skipped (`systemctl status printer-proxy-firstboot` shows the condition unmet).
+- [ ] Retry: on a freshly flashed card, pull power during first boot (e.g. while apt runs), power on again; first boot still completes.
