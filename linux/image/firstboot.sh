@@ -117,7 +117,10 @@ echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudf
 export DEBIAN_FRONTEND=noninteractive
 # Finish a dpkg run cut off by power loss on an earlier attempt. dpkg has no
 # lock wait, and armbian-firstrun may be running dpkg-reconfigure meanwhile.
-for _ in $(seq 60); do dpkg --configure -a && break; sleep 5; done
+for _ in $(seq 60); do dpkg --configure -a 2>/dev/null && break; sleep 5; done
+# Once more with errors shown (a no-op after success), so a persistent failure
+# names its cause here rather than only as apt's refusal below.
+dpkg --configure -a || echo "<4>firstboot: dpkg --configure -a keeps failing (error above)" >&2
 # A dead source (Armbian dropped bookworm builds for this board) makes update
 # exit non-zero; install still fails if the lists it needs are missing.
 apt-get -o DPkg::Lock::Timeout=300 update || log "apt-get update had errors, trying the install anyway"

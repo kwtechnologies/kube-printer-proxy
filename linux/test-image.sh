@@ -127,8 +127,9 @@ builds() {
   ALLOW_NO_RELEASE='' REPO_API=file://$t/api "$here/build-image.sh" "$t/test.env" /nonexistent >"$t/out" 2>&1 || true
   grep -q "$1" "$t/out" || { sed 's/^/    | /' "$t/out"; fail "release-check: want '$1'"; }
 }
-builds 'has no printer-proxy-linux-arm64.tar.gz' '{"tag_name":"v0.2.4","assets":[{"name":"printer-proxy.exe"}]}'
-builds 'no such image' '{"tag_name":"v0.3.0","assets":[{"name":"printer-proxy-linux-arm64.tar.gz"}]}'
+builds 'lacks printer-proxy-linux-arm64.tar.gz' '{"tag_name":"v0.2.4","assets":[{"name":"printer-proxy.exe"}]}'
+builds 'lacks printer-proxy-linux-arm64.tar.gz' '{"tag_name":"v0.3.0","assets":[{"name":"printer-proxy-linux-arm64.tar.gz"}]}'
+builds 'no such image' '{"tag_name":"v0.3.0","assets":[{"name":"printer-proxy-linux-arm64.tar.gz"},{"name":"printer-proxy-linux-arm64.tar.gz.sha256"}]}'
 pass release-check
 
 echo "== refuses a wrong image"

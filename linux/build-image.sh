@@ -129,8 +129,11 @@ if [ "${ALLOW_NO_RELEASE:-}" != 1 ]; then
   rel=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$rel_url") || die "cannot read $rel_url"
   tag=$(grep -o '"tag_name": *"[^"]*"' <<<"$rel" | head -n1 | sed 's/.*"\([^"]*\)"$/\1/')
   # For CHANNEL=pre the response lists one release, so any asset match is its own.
-  grep -q '"name": *"printer-proxy-linux-arm64.tar.gz"' <<<"$rel" ||
-    die "release ${tag:-?} (what CHANNEL=$(sed -n 's/^CHANNEL=//p' "$env_file") installs) has no printer-proxy-linux-arm64.tar.gz; first boot would never finish. Cut a release first, or ALLOW_NO_RELEASE=1"
+  # update.sh downloads both and dies without either.
+  if ! grep -q '"name": *"printer-proxy-linux-arm64.tar.gz"' <<<"$rel" ||
+    ! grep -q '"name": *"printer-proxy-linux-arm64.tar.gz.sha256"' <<<"$rel"; then
+    die "release ${tag:-?} (what CHANNEL=$(sed -n 's/^CHANNEL=//p' "$env_file") installs) lacks printer-proxy-linux-arm64.tar.gz or its .sha256; first boot would never finish. Cut a release first, or ALLOW_NO_RELEASE=1"
+  fi
   echo "first boot will install $tag"
 fi
 
