@@ -78,11 +78,12 @@ Keeping every release as a complete directory (with its own `install.sh`) means 
 
 Each run:
 
-1. Reads `CHANNEL` from `/etc/printer-proxy/env` (default `stable`). `stable` takes GitHub `releases/latest`; `pre` takes the newest release, pre-releases included.
+0. If the previous run was killed (power loss, timeout) between installing and the health verdict, `/opt/printer-proxy/rollback-to` is still there: it rolls back to the release named in it and exits non-zero, before anything else.
+1. Reads `CHANNEL` from `/etc/printer-proxy/env` (default `stable`, also when the file is missing). `stable` takes GitHub `releases/latest`; `pre` takes the newest release, pre-releases included. Switching a device from `pre` back to `stable` is intended to downgrade it to the latest stable on the next run, since the updater installs whatever the channel names, not only newer tags.
 2. If that tag equals `/opt/printer-proxy/current/VERSION`, exits 0. With nothing installed yet, it installs the tag.
-3. Downloads `printer-proxy-linux-arm64.tar.gz` and `.sha256`. On a mismatch it aborts with nothing changed.
+3. Downloads `printer-proxy-linux-arm64.tar.gz` and `.sha256` into `/opt/printer-proxy/.update.*` (not `/tmp`). On a mismatch it aborts with nothing changed.
 4. Runs the new bundle's `install.sh`, then polls `http://127.0.0.1:9191/health` for 15s until `version` is the new tag.
-5. Success: keeps the current and previous release dirs, prunes older ones. Failure: runs the previous release's `install.sh`, logs `UPDATE FAILED` at error priority and exits non-zero (the unit shows as failed). The bad tag is retried the next night until a newer release replaces it.
+5. Success: keeps the current and previous release dirs, prunes older ones. Failure: runs the previous release's `install.sh`, deletes the failed release dir, logs `UPDATE FAILED` at error priority and exits non-zero (the unit shows as failed). The bad tag is retried the next night until a newer release replaces it.
 
 Watch or trigger it:
 
@@ -92,7 +93,9 @@ systemctl list-timers printer-proxy-update.timer
 sudo systemctl start printer-proxy-update     # run now (blocks until done)
 ```
 
-A bundle that stops shipping a `.service` unit gets it disabled and removed but not stopped (it stops at the next boot): stopping it could kill the updater that is running `install.sh`. Dropped timers are stopped.
+A bundle that stops shipping a `.service` unit gets it disabled and removed but not stopped (it stops at the next boot): stopping it could kill the updater that is running `install.sh`. Dropped timers are stopped. The same applies after a rollback: a service that only the failed release shipped is disabled but keeps running until the next reboot.
+
+The unit has `TimeoutStartSec=15min` and is sandboxed (`ProtectSystem=strict` with write access only to `/opt/printer-proxy`, `/etc/systemd/system` and `/etc/printer-proxy`), so a bundle's `install.sh` must not write anywhere else.
 
 ## Development
 
