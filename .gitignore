@@ -1,6 +1,7 @@
+*.env
 printer-proxy
-printer-proxy.exe
 *.log
-.env
 dist/
-**/node_modules
+.DS_Store
+*.img
+*.img.xz

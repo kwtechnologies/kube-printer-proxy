@@ -1,0 +1,21 @@
+[Unit]
+Description=printer-proxy self-update (see update.sh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/printer-proxy/current/update.sh
+# Oneshots default to no start timeout; a hung systemctl would block the timer forever.
+TimeoutStartSec=15min
+# Runs as root: writes releases and units and drives systemd over D-Bus, so no
+# User=, PrivateNetwork= or CapabilityBoundingSet=. "-": the env file is optional.
+ProtectSystem=strict
+ReadWritePaths=/opt/printer-proxy /etc/systemd/system -/etc/printer-proxy
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes

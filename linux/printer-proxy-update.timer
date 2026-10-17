@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly printer-proxy self-update
+
+[Timer]
+# Device local time (Asia/Hong_Kong). Persistent: run at boot if 03:00 was missed.
+OnCalendar=*-*-* 03:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
