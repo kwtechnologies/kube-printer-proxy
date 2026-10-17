@@ -202,7 +202,7 @@ pass hostname-timezone
 [ "$(x stat -c '%U %a' /home/kube/.ssh/authorized_keys)" = "kube 600" ] || fail authorized-keys-mode
 [ "$(x cat /home/kube/.ssh/authorized_keys)" = "$(cat "$t/key.pub")" ] || fail authorized-keys
 x sudo -l -U kube | grep -q 'NOPASSWD: ALL' || fail sudo
-[ "$(x passwd -S root | cut -d' ' -f2)" = L ] && [ "$(x passwd -S kube | cut -d' ' -f2)" = L ] || fail passwords-locked
+[[ $(x passwd -S root | cut -d' ' -f2) = L && $(x passwd -S kube | cut -d' ' -f2) = L ]] || fail passwords-locked
 sshd=$(x sshd -T)
 for kv in "permitrootlogin no" "passwordauthentication no" "kbdinteractiveauthentication no" "pubkeyauthentication yes"; do
   grep -qx "$kv" <<<"$sshd" || fail "sshd: $kv"

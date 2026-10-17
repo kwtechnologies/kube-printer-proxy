@@ -59,7 +59,7 @@ check_env() {
   # config and go Ethernet-only, so catch it here instead.
   if [ -n "$(val WIFI_SSID)$(val WIFI_PASSWORD)" ]; then
     v=$(val WIFI_SSID | tr -d '\n' | wc -c)
-    [ "$v" -ge 1 ] && [ "$v" -le 32 ] || die "$f: WIFI_SSID must be 1-32 bytes"
+    [[ $v -ge 1 && $v -le 32 ]] || die "$f: WIFI_SSID must be 1-32 bytes"
     LC_ALL=C grep -qE '^WIFI_PASSWORD=[[:print:]]{8,63}$' "$f" || die "$f: WIFI_PASSWORD must be 8-63 printable ASCII characters (open networks are not supported)"
   fi
   v=$(val WIFI_COUNTRY)
