@@ -138,8 +138,10 @@ Unattended-Upgrade::Origins-Pattern {
         "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
         "origin=cloudflared,codename=any";
 };
-// A cloudflared upgrade only takes effect once the tunnel restarts.
-DPkg::Post-Invoke { "systemctl try-restart cloudflared-tunnel.service >/dev/null 2>&1 || true"; };
+// A cloudflared upgrade only takes effect once the tunnel restarts. Restart
+// only when the binary is newer than the running process: this hook runs after
+// every dpkg call, and restarting each time drops the tunnel on every upgrade.
+DPkg::Post-Invoke { "[ /usr/bin/cloudflared -nt /proc/$(systemctl show -p MainPID --value cloudflared-tunnel.service) ] && systemctl try-restart cloudflared-tunnel.service >/dev/null 2>&1 || true"; };
 EOF
 
 log "installing printer-proxy (channel $(get CHANNEL))"
