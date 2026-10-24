@@ -109,8 +109,8 @@ linux/test-image.sh                # SD image build + check + first-boot test (D
 
 ## Cutting a release
 
-1. Tag a release candidate: `git tag v0.3.0-rc1 && git push origin v0.3.0-rc1`. CI publishes it as a **pre-release**, picked up only by `CHANNEL=pre` devices (the test Pi).
-2. Soak on the test Pi. If needed, iterate `-rc2`, ...
+1. Tag a release candidate: `git tag v0.3.0-rc1 && git push origin v0.3.0-rc1`. CI publishes it as a **pre-release**, picked up only by `CHANNEL=pre` devices.
+2. Soak it on a `CHANNEL=pre` device, if one exists (see the runbook's Releases step). If needed, iterate `-rc2`, ...
 3. Tag stable: `git tag v0.3.0 && git push origin v0.3.0`. Prod devices (`CHANNEL=stable`) pick it up on the next nightly update.
 
 ## Provisioning a device
@@ -157,7 +157,9 @@ Output is `./printer-proxy-<env name>.img` (override with `OUT=`). It holds the 
 
 ### Runbook
 
-Dashboard steps are manual. Hostnames below are examples except the existing prod one.
+Dashboard steps are manual. Hostnames below are the Kube office ones.
+
+**One tunnel per device.** Cloudflare spreads a tunnel's traffic across all of its connectors, so a second connector anywhere else (a spare board, the old Windows box) would receive a share of real print jobs and fail them. A new device gets a new tunnel, and the cutover is a change of the URL that kube-api-v2 calls, never a second connector on a live tunnel.
 
 0. **Before you flash: a release with the bundle must exist** for the channel the env file uses. A card flashed without one never finishes first boot, and the tunnel is only started by its last step, so the device is unreachable except over the LAN. Check:
 
@@ -167,9 +169,8 @@ Dashboard steps are manual. Hostnames below are examples except the existing pro
    ```
 
    The list must include `printer-proxy-linux-arm64.tar.gz`. `build-image.sh` does the same check and refuses otherwise.
-1. **Prod tunnel token.** Zero Trust → Networks → Tunnels → the existing `print-proxy-kube-office.kwtech.dev` tunnel → configure → the install command. The token is the long string after `--token`. Put it in `prod.env` (`TUNNEL_TOKEN`) in the password manager, with the existing `API_KEY`.
-2. **Test tunnel.** Create a tunnel `print-proxy-test`, add a public hostname (e.g. `print-proxy-test.kwtech.dev`) → service `http://localhost:9191`, and put its token in `test.env` with `CHANNEL=pre`. Point **staging** `PrintProxyConfig.url` at that hostname. The test Pi must never carry the prod token: Cloudflare load-balances across a tunnel's connectors.
-3. **SSH rescue.** On each tunnel add a second public hostname (e.g. `ssh-print-proxy-kube-office.kwtech.dev`) → service `ssh://localhost:22`, and a Zero Trust Access self-hosted application on that hostname allowing only kwtech staff. Then on your machine (with `cloudflared` installed):
+1. **Tunnel.** Zero Trust → Networks → Tunnels → create a Cloudflared tunnel named after the device (e.g. `print-proxy-kube-office-pi`), skip installing a connector, and add a public hostname `print-proxy-kube-office-pi.kwtech.dev` → service HTTP `localhost:9191`. Put its token (the long string after `--token`) in the device's env file as `TUNNEL_TOKEN`, with a fresh `API_KEY` (`openssl rand -hex 32`). The token never leaves the device; kube-api-v2 only ever gets the URL and the `API_KEY`.
+2. **SSH rescue.** On the same tunnel add a second public hostname (e.g. `ssh-print-proxy-kube-office-pi.kwtech.dev`) → service `ssh://localhost:22`, and a Zero Trust Access self-hosted application on that hostname allowing only kwtech staff. Then on your machine (with `cloudflared` installed):
 
    ```
    Host ssh-print-proxy-*.kwtech.dev
@@ -178,22 +179,45 @@ Dashboard steps are manual. Hostnames below are examples except the existing pro
      ProxyCommand cloudflared access ssh --hostname %h
    ```
 
-4. **Alerts.** Cloudflare dashboard → Notifications → add a Tunnel Health alert for both tunnels, emailing the team.
-5. **Build, flash, boot, verify.**
+3. **Alerts.** Cloudflare dashboard → Notifications → add a Tunnel Health alert for the tunnel, emailing the team.
+4. **Build, flash, boot, verify at your desk.** The device can be set up anywhere with internet: on its own tunnel it serves no real traffic until step 7.
 
    ```bash
-   # test.env / prod.env from the password manager, never committed
-   linux/build-image.sh test.env                                    # -> printer-proxy-test.img (prints the tag first boot will install)
-   linux/test-image.sh --check printer-proxy-test.img test.env      # optional: assert what was baked
+   # the env file lives in the password manager, never committed
+   linux/build-image.sh office.env                                  # -> printer-proxy-office.img (prints the tag first boot will install)
+   linux/test-image.sh --check printer-proxy-office.img office.env  # optional: assert what was baked
    ```
 
-   Flash the `.img` with balenaEtcher, delete the `.img`, insert the card, connect Ethernet and power. First boot takes a few minutes (filesystem resize, apt). Then run the hardware checklist below; at minimum `curl https://print-proxy-test.kwtech.dev/health` shows the release tag, and a test print from staging comes out.
-6. **Cutover by overlap.** Boot the prod-image Pi while Windows still runs: it joins the prod tunnel as a second connector. Send several prints from the portal and handhelds (with two connectors, any request may go to either box), check `journalctl -u printer-proxy` on the Pi shows them, then power Windows off and print again. **Rollback:** power Windows back on and unplug the Pi.
-7. **Releases.** See [Cutting a release](#cutting-a-release): tag `-rc`, soak on the test Pi (`CHANNEL=pre`), then tag stable for prod (`CHANNEL=stable`). The first device boot needs a release that has the Linux bundle asset (step 0).
+   Flash the `.img` with balenaEtcher (validation on), delete the `.img`, insert the card fully, connect Ethernet and power. First boot takes about 5 minutes (filesystem resize, apt). Then run the hardware checklist below. To test printing without a printer, let your laptop on the same LAN play one:
+
+   ```bash
+   nc -l 9100                                                       # on the laptop: prints whatever arrives
+   curl -s -X POST https://print-proxy-kube-office-pi.kwtech.dev/print -H "X-API-Key: $API_KEY" \
+     -H 'Content-Type: application/json' -d '{"ip":"<laptop LAN IP>","zpl":"^XA^FDhello^FS^XZ"}'
+   ```
+
+   `{"status":"ok"}` and the ZPL appearing in `nc` prove internet → tunnel → proxy → TCP 9100.
+5. **Optionally rehearse the switch** from the real API, with a quiet moment and an ADMIN JWT: save the current `GET /print-proxy-config` (url and apiKey), `PUT /print-proxy-config` with the new URL and key, check `GET /print-jobs/proxy-health` reports the device's version, then `PUT` the saved values back. Scripted, prod points at the device for about a second; any print in that window would go to the device instead.
+6. **On site.** Plug the device into Ethernet on the printers' network and power it. Over SSH: set `CHANNEL=stable` and the site's Wi-Fi (or none) as in [Changing a deployed device's config](#changing-a-deployed-devices-config), then check `ip route get <printer IP>` says the Ethernet interface (`end0` on the Zero 3) and `nc -zv <printer IP> 9100` connects.
+7. **Cutover.** Portal → Print Proxy: set the URL to `https://print-proxy-kube-office-pi.kwtech.dev` and the API key to the device's `API_KEY`. kube-api-v2 reads the config on every print, so it takes effect at once. Print from the portal and a handheld; `journalctl -u printer-proxy` on the device shows the requests. **Rollback:** put the old URL and key back (keep them in the password manager); the old proxy keeps running on its own tunnel until you retire it.
+8. **Retire the old proxy** after about a week without rollback: power it off, then delete its tunnel, Access application and Tunnel Health alert.
+9. **Releases.** See [Cutting a release](#cutting-a-release). With one device on `CHANNEL=stable` there is no soak device: a stable tag reaches it the next night, so run `linux/test-update.sh` and `linux/test-image.sh` first. A spare board on its own tunnel with `CHANNEL=pre` brings the soak step back.
+
+### Changing a deployed device's config
+
+The env file is read at runtime, so most changes need no reflash. As `kube` over SSH, edit `/etc/printer-proxy/env` with `sudo` (one `KEY=value` per line, no quotes; `build-image.sh` validates values but an edit here is not checked), then:
+
+| Changed | Apply with |
+|---|---|
+| `CHANNEL` | nothing; the next nightly update uses it |
+| `TUNNEL_TOKEN`, `API_KEY` | `sudo systemctl restart cloudflared-tunnel printer-proxy` |
+| `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_COUNTRY`, `DEVICE_HOSTNAME`, `SSH_AUTHORIZED_KEYS` | `sudo /usr/local/lib/printer-proxy/firstboot.sh` (idempotent: rewrites netplan and applies it only if it changed, re-checks the user and apt setup, then runs the updater once, like a nightly run; tag a stable release before setting `CHANNEL=stable`, or that last step fails harmlessly) |
+
+Change Wi-Fi only while the device is on Ethernet: the old Wi-Fi link drops when netplan applies, and a typo leaves Wi-Fi down (a value netplan rejects makes first boot fall back to Ethernet-only). Reflash instead when the card is suspect, or to bring in a fix to the files first boot writes (the apt hook, sshd drop-in, netplan template): nightly updates replace the bundle, not those.
 
 ### Hardware boot checklist (real Zero 3)
 
-Run on the test Pi with `test.env` first. SSH in through the Access hostname as `kube`. Until first boot has finished there is no tunnel: use the LAN instead, `ssh kube@<IP from the router's DHCP table>` (the `kube` user exists from the second step of first boot), then `journalctl -u printer-proxy-firstboot`. Root and `kube` have no usable password, so console login is impossible: if SSH doesn't work either, reflashing is the only recovery.
+Run before deploying, at your desk. SSH in through the Access hostname as `kube`. Until first boot has finished there is no tunnel: use the LAN instead, `ssh kube@<IP from the router's DHCP table>` (the `kube` user exists from the second step of first boot), then `journalctl -u printer-proxy-firstboot`. Root and `kube` have no usable password, so console login is impossible: if SSH doesn't work either, reflashing is the only recovery.
 
 - [ ] HDMI or serial console (ttyS0, 115200) shows a plain login prompt: no Armbian wizard, no root autologin.
 - [ ] `systemctl status printer-proxy-firstboot` succeeded; `journalctl -u printer-proxy-firstboot` ends with `firstboot: done`.
