@@ -213,6 +213,8 @@ The env file is read at runtime, so most changes need no reflash. As `kube` over
 | `TUNNEL_TOKEN`, `API_KEY` | `sudo systemctl restart cloudflared-tunnel printer-proxy` |
 | `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_COUNTRY`, `DEVICE_HOSTNAME`, `SSH_AUTHORIZED_KEYS` | `sudo /usr/local/lib/printer-proxy/firstboot.sh` (idempotent: rewrites netplan and applies it only if it changed, re-checks the user and apt setup, then runs the updater once, like a nightly run; tag a stable release before setting `CHANNEL=stable`, or that last step fails harmlessly) |
 
+`firstboot.sh` here is the copy baked into the card when it was built, and a re-run rewrites the files it owns (apt hook, netplan, sshd drop-in) from that copy. If `linux/image/firstboot.sh` has changed since, copy it over first (`scp` it, then `sudo install -m 0755 firstboot.sh /usr/local/lib/printer-proxy/`), or the re-run reverts those fixes.
+
 Change Wi-Fi only while the device is on Ethernet: the old Wi-Fi link drops when netplan applies, and a typo leaves Wi-Fi down (a value netplan rejects makes first boot fall back to Ethernet-only). Reflash instead when the card is suspect, or to bring in a fix to the files first boot writes (the apt hook, sshd drop-in, netplan template): nightly updates replace the bundle, not those.
 
 ### Hardware boot checklist (real Zero 3)
